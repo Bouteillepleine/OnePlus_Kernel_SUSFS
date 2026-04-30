@@ -1925,6 +1925,98 @@ runs:
           echo "susfs_version=${SUSVER:-unknown}" >> "$GITHUB_OUTPUT"
         fi
 
+    - name: Download Latest SUSFS Module from CI
+      shell: bash
+      if: ${{ env.OP_SUSFS == 'true' }}
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+
+        echo "::group::Download latest SUSFS module from CI"
+
+        REPO="sidex15/susfs4ksu-module"
+        BRANCH="v1.5.2+"
+        OUTER_ZIP="/tmp/susfs_module_artifact.zip"
+        EXTRACT_DIR="/tmp/susfs_module_artifact"
+        MODULE_NAME="ksu_module_susfs_1.5.2+_CI.zip"
+
+        echo "Finding latest successful run for $REPO branch $BRANCH"
+
+        LATEST_RUN_ID="$(
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/actions/runs?status=success&per_page=50" |
+          jq -r --arg branch "$BRANCH" '
+            .workflow_runs[]
+            | select(.head_branch == $branch)
+            | .id
+          ' |
+          head -n 1
+        )"
+
+        if [ -z "$LATEST_RUN_ID" ] || [ "$LATEST_RUN_ID" = "null" ]; then
+          echo "No successful run found for branch $BRANCH"
+          echo "::endgroup::"
+          exit 0
+        fi
+
+        echo "Latest successful run ID: $LATEST_RUN_ID"
+
+        ARTIFACT_URL="$(
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/actions/runs/${LATEST_RUN_ID}/artifacts" |
+          jq -r '
+            .artifacts[]
+            | select(.expired == false)
+            | .archive_download_url
+          ' |
+          head -n 1
+        )"
+
+        if [ -z "$ARTIFACT_URL" ] || [ "$ARTIFACT_URL" = "null" ]; then
+          echo "No downloadable non-expired artifact found"
+          echo "::endgroup::"
+          exit 0
+        fi
+
+        echo "Downloading artifact archive"
+
+        curl -fL \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -o "$OUTER_ZIP" \
+          "$ARTIFACT_URL"
+
+        rm -rf "$EXTRACT_DIR"
+        mkdir -p "$EXTRACT_DIR"
+
+        unzip -q "$OUTER_ZIP" -d "$EXTRACT_DIR"
+
+        echo "Artifact contents:"
+        find "$EXTRACT_DIR" -maxdepth 2 -type f -print
+
+        MODULE_ZIP="$(find "$EXTRACT_DIR" -type f -name '*.zip' | head -n 1 || true)"
+
+        if [ -z "$MODULE_ZIP" ]; then
+          echo "No module ZIP found inside artifact archive"
+          echo "::endgroup::"
+          exit 0
+        fi
+
+        mkdir -p "$AK3_FOLDER"
+
+        cp "$MODULE_ZIP" "$AK3_FOLDER/$MODULE_NAME"
+
+        echo "✅ SUSFS module copied to AnyKernel3:"
+        echo "   $AK3_FOLDER/$MODULE_NAME"
+
+        echo "::endgroup::"
+
     - name: Create Kernel ZIP
       id: create_zip
       shell: bash
