@@ -1515,6 +1515,16 @@ runs:
         CONFIG_OPTIMIZE_INLINING=y
         CONFIG_FRAME_WARN=0
         CONFIG_TRACEPOINTS=y
+        CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
+        CONFIG_OPTIMIZE_INLINING=y         
+        CONFIG_DEBUG_KERNEL=n
+        CONFIG_DEBUG_INFO=n
+        CONFIG_DEBUG_INFO_DWARF4=n
+        CONFIG_LOCK_DEBUGGING=n
+        CONFIG_DEBUG_MUTEXES=n
+        CONFIG_DEBUG_SPINLOCK=n
+        CONFIG_DEBUG_ATOMIC_SLEEP=n
+        CONFIG_GDB_SCRIPTS=n
         EOF
 
     - name: Add RUST build configs
@@ -1676,6 +1686,26 @@ runs:
             exit 1
             ;;
         esac
+
+        echo "Disabling unwanted KUnit test configs"
+
+        disable_list=(
+          CONFIG_REGMAP_KUNIT
+          CONFIG_INPUT_KUNIT_TEST
+          CONFIG_SND_SOC_TOPOLOGY_KUNIT_TEST
+          CONFIG_SND_SOC_UTILS_KUNIT_TEST
+          CONFIG_HID_KUNIT_TEST
+          CONFIG_RTC_LIB_KUNIT_TEST
+          CONFIG_CLK_KUNIT_TEST
+          CONFIG_CLK_GATE_KUNIT_TEST
+          CONFIG_IIO_FORMAT_KUNIT_TEST
+          CONFIG_EXT4_KUNIT_TESTS
+          CONFIG_FAT_KUNIT_TEST
+        )
+        
+        for sym in "${disable_list[@]}"; do
+          scripts/config --file "$OUT/.config" -d "$sym" 2>/dev/null || true
+        done
         
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" olddefconfig
         
