@@ -128,7 +128,8 @@ jobs:
 
           # IMPORTANT:
           # Do NOT add AnyKernel3 here.
-          # AnyKernel3 must be synced directly from the manifest.
+          # AnyKernel3 must be synced directly from the manifest, not mirrored
+          # into the toolchain-cache release.
           TOOLCHAIN_MAP = {
               "clang/host/linux-x86": "clang",
               "prebuilts/rust": "rust",
@@ -232,8 +233,12 @@ jobs:
 
                       elif "git.codelinaro.org" in base_url or "gitlab.com" in base_url:
                           provider = "gitlab"
-                          # Canonical GitLab/CodeLinaro archive format.
-                          # This avoids many 403 cases from the shorter /<rev>.tar.gz form.
+
+                          # Canonical GitLab/CodeLinaro archive URL:
+                          # /-/archive/<ref>/<repo-leaf>-<ref>.tar.gz
+                          #
+                          # Example:
+                          # .../linux-x86/-/archive/<rev>/linux-x86-<rev>.tar.gz
                           dl_url = f"{base_url}/{name}/-/archive/{rev}/{repo_leaf}-{rev}.tar.gz"
                           clone_url = f"{base_url}/{name}.git"
 
@@ -386,9 +391,9 @@ jobs:
           fi
 
           download_with_aria2() {
-            echo "🌐 Trying aria2c with browser-like headers..."
+            echo "🌐 Trying aria2c with browser-like headers, limited to 180s..."
 
-            aria2c \
+            timeout 180s aria2c \
               -x1 \
               -s1 \
               -k1M \
@@ -396,10 +401,11 @@ jobs:
               --file-allocation=none \
               --console-log-level=warn \
               --summary-interval=30 \
-              --retry-wait=15 \
-              --max-tries=5 \
-              --connect-timeout=60 \
-              --timeout=600 \
+              --retry-wait=10 \
+              --max-tries=1 \
+              --connect-timeout=30 \
+              --timeout=120 \
+              --lowest-speed-limit=1K \
               --allow-overwrite=true \
               --auto-file-renaming=false \
               --header="User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" \
@@ -411,18 +417,18 @@ jobs:
           }
 
           download_with_curl() {
-            echo "🌐 Trying curl fallback with long timeout..."
+            echo "🌐 Trying curl fallback, limited to 180s..."
 
-            curl \
+            timeout 180s curl \
               -L \
               --fail \
-              --retry 10 \
-              --retry-delay 20 \
+              --retry 2 \
+              --retry-delay 10 \
               --retry-all-errors \
-              --connect-timeout 60 \
-              --max-time 7200 \
-              --speed-time 600 \
-              --speed-limit 1 \
+              --connect-timeout 30 \
+              --max-time 170 \
+              --speed-time 120 \
+              --speed-limit 1024 \
               -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" \
               -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
               -H "Accept-Language: en-US,en;q=0.9" \
@@ -432,7 +438,7 @@ jobs:
           }
 
           create_archive_from_git() {
-            echo "🧰 HTTP archive failed. Falling back to git fetch + git archive..."
+            echo "🧰 Creating archive from git fetch + git archive..."
             echo "Clone URL: $CLONE_URL"
             echo "Revision:  $REV"
 
@@ -443,10 +449,42 @@ jobs:
 
             git remote add origin "$CLONE_URL"
 
-            # Fetch the exact revision. This usually works for commit hashes on GitLab/CodeLinaro.
-            git fetch --no-tags --depth=1 origin "$REV"
+            git config http.version HTTP/1.1
+            git config http.lowSpeedLimit 1000
+            git config http.lowSpeedTime 600
+            git config advice.detachedHead false
 
-            git checkout --force FETCH_HEAD
+            echo "🔍 Fetching exact revision..."
+
+            if git \
+              -c http.userAgent="Mozilla/5.0 GitHub-Actions" \
+              fetch \
+              --no-tags \
+              --depth=1 \
+              origin \
+              "$REV"; then
+
+              echo "✅ Exact revision fetch succeeded."
+              git checkout --force FETCH_HEAD
+
+            else
+              echo "⚠️ Direct revision fetch failed. Trying remote refs fallback..."
+
+              git \
+                -c http.userAgent="Mozilla/5.0 GitHub-Actions" \
+                fetch \
+                --no-tags \
+                --depth=50 \
+                origin \
+                '+refs/heads/*:refs/remotes/origin/*'
+
+              if git cat-file -e "${REV}^{commit}" 2>/dev/null; then
+                git checkout --force "$REV"
+              else
+                echo "::error::Revision $REV was not found after fallback fetch."
+                exit 1
+              fi
+            fi
 
             echo "📦 Creating tar.gz with one top-level folder:"
             echo "Prefix: ${REPO_LEAF}-${REV}/"
@@ -465,24 +503,33 @@ jobs:
 
           download_ok=false
 
-          if download_with_aria2; then
+          # CodeLinaro clang archive generation is extremely flaky.
+          # It often hangs forever at 0B/0B or returns 403.
+          # For clang on GitLab/CodeLinaro, skip HTTP archive and create the archive locally.
+          if [ "$PROVIDER" = "gitlab" ] && [ "$TYPE_LABEL" = "clang" ]; then
+            echo "🧰 CodeLinaro/GitLab clang detected. Skipping HTTP archive and using git fallback directly."
+            create_archive_from_git
             download_ok=true
           else
-            echo "⚠️ aria2c failed."
-            rm -f "$FILENAME"
-
-            if download_with_curl; then
+            if download_with_aria2; then
               download_ok=true
             else
-              echo "⚠️ curl archive download also failed."
+              echo "⚠️ aria2c failed or timed out."
               rm -f "$FILENAME"
 
-              if [ "$PROVIDER" = "gitlab" ] || [ "$PROVIDER" = "github" ]; then
-                create_archive_from_git
+              if download_with_curl; then
                 download_ok=true
               else
-                echo "::error::No git fallback configured for provider: $PROVIDER"
-                download_ok=false
+                echo "⚠️ curl archive download also failed."
+                rm -f "$FILENAME"
+
+                if [ "$PROVIDER" = "gitlab" ] || [ "$PROVIDER" = "github" ]; then
+                  create_archive_from_git
+                  download_ok=true
+                else
+                  echo "::error::No git fallback configured for provider: $PROVIDER"
+                  download_ok=false
+                fi
               fi
             fi
           fi
@@ -493,7 +540,7 @@ jobs:
           fi
 
           if [ ! -f "$FILENAME" ]; then
-            echo "::error::Downloaded file missing: $FILENAME"
+            echo "::error::Downloaded/generated file missing: $FILENAME"
             exit 1
           fi
 
@@ -503,7 +550,7 @@ jobs:
           echo "📏 File size: $FILE_SIZE bytes"
 
           if [ "$FILE_SIZE" -le 0 ]; then
-            echo "::error::Downloaded file is empty: $FILENAME"
+            echo "::error::Downloaded/generated file is empty: $FILENAME"
             exit 1
           fi
 
