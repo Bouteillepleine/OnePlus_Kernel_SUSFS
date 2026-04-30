@@ -34,6 +34,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          echo "🔄 Fetching tags..."
+          git fetch --tags --force origin || true
+
           echo "🔍 Checking Git tag..."
 
           if git rev-parse "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
@@ -89,6 +92,11 @@ jobs:
 
           mapfile -t files < <(find configs/ -name "*.json" | sort)
 
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No config JSON files found in configs/"
+            exit 1
+          fi
+
           for i in "${!files[@]}"; do
             cat "${files[$i]}" >> all_configs.json
 
@@ -118,7 +126,11 @@ jobs:
               configs = json.load(f)
 
           unique_toolchains = {}
-       
+
+          # IMPORTANT:
+          # Do NOT add AnyKernel3 here.
+          # AnyKernel3 must be synced directly from the manifest, not mirrored
+          # into the toolchain-cache release.
           TOOLCHAIN_MAP = {
               "clang/host/linux-x86": "clang",
               "prebuilts/rust": "rust",
@@ -143,11 +155,14 @@ jobs:
                           ["curl", "-LfsS", op_manifest, "-o", xml_file],
                           check=True,
                       )
+
                   elif op_branch.startswith("wild/"):
-                      shutil.copy(
-                          f"manifests/{op_os_version}/{op_manifest}",
-                          xml_file,
-                      )
+                      local_manifest = f"manifests/{op_os_version}/{op_manifest}"
+                      if not os.path.exists(local_manifest):
+                          raise FileNotFoundError(f"Local manifest not found: {local_manifest}")
+
+                      shutil.copy(local_manifest, xml_file)
+
                   else:
                       url = f"https://raw.githubusercontent.com/OnePlusOSS/kernel_manifest/refs/heads/{op_branch}/{op_manifest}"
                       subprocess.run(
@@ -204,10 +219,16 @@ jobs:
 
                       if "googlesource.com" in base_url:
                           dl_url = f"{base_url}/{name}/+archive/{rev}.tar.gz"
+
                       elif "github.com" in base_url:
                           dl_url = f"{base_url}/{name}/archive/{rev}.tar.gz"
+
                       elif "git.codelinaro.org" in base_url or "gitlab.com" in base_url:
-                          dl_url = f"{base_url}/{name}/-/archive/{rev}.tar.gz"
+                          # Canonical GitLab archive URL format:
+                          # /-/archive/<ref>/<repo-leaf>-<ref>.tar.gz
+                          repo_leaf = name.rstrip("/").split("/")[-1]
+                          dl_url = f"{base_url}/{name}/-/archive/{rev}/{repo_leaf}-{rev}.tar.gz"
+
                       else:
                           error_msg = f"❌ [FATAL] Unknown toolchain provider for: {base_url}"
                           print(f"::error::{error_msg}")
@@ -222,6 +243,7 @@ jobs:
                       }
 
                       print(f"🆕 [{op_model}][{op_os_version}] -> New {type_label} found: {rev}")
+                      print(f"    URL: {dl_url}")
 
               except Exception as e:
                   print(f"⚠️ Failed to process {op_manifest}: {e}")
@@ -242,6 +264,7 @@ jobs:
       - generate-mirror-matrix
 
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     permissions:
       contents: write
@@ -254,6 +277,18 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
+      - name: Install download tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "📦 Installing required tools..."
+          sudo apt-get update
+          sudo apt-get install -y aria2 pigz
+
+          aria2c --version | head -n 1
+          pigz --version || true
+
       - name: Sync & Upload
         shell: bash
         run: |
@@ -294,10 +329,29 @@ jobs:
             echo "✅ Release '$TAG_NAME' created."
           fi
 
+          http_status() {
+            local url="$1"
+            local code
+
+            code="$(curl \
+              -IsL \
+              -o /dev/null \
+              -w "%{http_code}" \
+              --connect-timeout 30 \
+              --max-time 120 \
+              "$url" || true)"
+
+            if [ -z "$code" ]; then
+              code="000"
+            fi
+
+            echo "$code"
+          }
+
           echo "🔍 Checking if $FILENAME exists in mirror..."
 
-          STATUS=$(curl -IsL -o /dev/null -w "%{http_code}" "$BASE_URL/$FILENAME" || echo "000")
-          PART_STATUS=$(curl -IsL -o /dev/null -w "%{http_code}" "$BASE_URL/${FILENAME}.partaa" || echo "000")
+          STATUS="$(http_status "$BASE_URL/$FILENAME")"
+          PART_STATUS="$(http_status "$BASE_URL/${FILENAME}.partaa")"
 
           echo "Single file status: $STATUS"
           echo "Part file status:   $PART_STATUS"
@@ -309,26 +363,61 @@ jobs:
 
           echo "📥 Not found. Downloading $TYPE_LABEL from source..."
 
-          aria2c \
-            -x4 \
-            -s4 \
+          download_ok=false
+
+          echo "🌐 Downloading with aria2c, long timeout mode..."
+
+          if aria2c \
+            -x1 \
+            -s1 \
             -k1M \
-            -j5 \
+            -j1 \
             --file-allocation=none \
-            --console-log-level=error \
-            --summary-interval=0 \
-            --retry-wait=5 \
-            --max-tries=10 \
+            --console-log-level=warn \
+            --summary-interval=30 \
+            --retry-wait=15 \
+            --max-tries=5 \
+            --connect-timeout=60 \
+            --timeout=600 \
             --allow-overwrite=true \
+            --auto-file-renaming=false \
+            --header="User-Agent: Mozilla/5.0" \
+            --header="Accept: */*" \
             -o "$FILENAME" \
-            "$SOURCE_URL"
+            "$SOURCE_URL"; then
+            download_ok=true
+          else
+            echo "⚠️ aria2c failed or timed out. Falling back to curl..."
+            rm -f "$FILENAME"
+
+            if curl \
+              -L \
+              --fail \
+              --retry 10 \
+              --retry-delay 20 \
+              --retry-all-errors \
+              --connect-timeout 60 \
+              --max-time 7200 \
+              --speed-time 600 \
+              --speed-limit 1 \
+              -A "Mozilla/5.0" \
+              -o "$FILENAME" \
+              "$SOURCE_URL"; then
+              download_ok=true
+            fi
+          fi
+
+          if [ "$download_ok" != "true" ]; then
+            echo "::error::Failed to download source archive: $SOURCE_URL"
+            exit 1
+          fi
 
           if [ ! -f "$FILENAME" ]; then
             echo "::error::Downloaded file missing: $FILENAME"
             exit 1
           fi
 
-          FILE_SIZE=$(stat -c%s "$FILENAME")
+          FILE_SIZE="$(stat -c%s "$FILENAME")"
           MAX_SIZE=2000000000 # ~1.86GB
 
           echo "📏 File size: $FILE_SIZE bytes"
@@ -338,16 +427,35 @@ jobs:
             exit 1
           fi
 
+          echo "🧪 Validating archive..."
+
+          if ! tar -tzf "$FILENAME" >/dev/null 2>&1; then
+            echo "::error::Downloaded file is not a valid tar.gz archive: $FILENAME"
+            file "$FILENAME" || true
+            head -c 500 "$FILENAME" || true
+            exit 1
+          fi
+
+          echo "✅ Archive validation passed."
+
           if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
             echo "⚠️ File > 2GB. Splitting..."
             split -b 1500M -a 2 "$FILENAME" "${FILENAME}.part"
+
+            uploaded_any=false
 
             for part in "${FILENAME}".part*; do
               if [ -f "$part" ]; then
                 echo "📤 Uploading $part..."
                 gh release upload "$TAG_NAME" "$part" --clobber --repo "$TARGET_REPO"
+                uploaded_any=true
               fi
             done
+
+            if [ "$uploaded_any" != "true" ]; then
+              echo "::error::File was marked as large, but no split parts were created."
+              exit 1
+            fi
 
             echo "✅ Uploaded split archive parts for $FILENAME"
           else
