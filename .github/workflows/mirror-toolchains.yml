@@ -10,37 +10,69 @@ on:
 jobs:
   prepare-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - name: Ensure Single Release
+      - name: Ensure toolchain-cache tag and release exist
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Check if the release already exists
+          set -euo pipefail
+
           TARGET_REPO="${{ github.repository }}"
           TAG_NAME="toolchain-cache"
-          
-          if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
-            echo "Tag not found. Creating backdated tag and release..."
-            
-            GIT_COMMITTER_DATE="2015-01-01T12:00:00" git tag -a "$TAG_NAME" -m "Internal Toolchains Cache"
-            git push origin "$TAG_NAME"
-            
-            echo "Release not found. Creating..."
-            gh release create "$TAG_NAME" --title "Toolchains Mirror Cache" --notes "Deduplicated Toolchains for Kernel Build" --repo "$TARGET_REPO"
+
+          echo "📦 Ensuring tag and release '$TAG_NAME' exist in $TARGET_REPO..."
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          echo "🔍 Checking Git tag..."
+
+          if git rev-parse "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+            echo "✅ Tag '$TAG_NAME' already exists."
           else
-            echo "Release 'toolchain-cache' already exists. Skipping creation."
+            echo "🏷️ Tag '$TAG_NAME' not found. Creating backdated annotated tag..."
+
+            GIT_COMMITTER_DATE="2015-01-01T12:00:00Z" \
+            GIT_AUTHOR_DATE="2015-01-01T12:00:00Z" \
+            git tag -a "$TAG_NAME" -m "Internal Toolchains Cache"
+
+            git push origin "$TAG_NAME"
+
+            echo "✅ Tag '$TAG_NAME' created and pushed."
+          fi
+
+          echo "🔍 Checking GitHub Release..."
+
+          if gh release view "$TAG_NAME" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+            echo "✅ Release '$TAG_NAME' already exists."
+          else
+            echo "🚀 Release '$TAG_NAME' not found. Creating release..."
+
+            gh release create "$TAG_NAME" \
+              --repo "$TARGET_REPO" \
+              --title "Toolchains Mirror Cache" \
+              --notes "Deduplicated Toolchains for Kernel Build" \
+              --latest=false
+
+            echo "✅ Release '$TAG_NAME' created."
           fi
 
   generate-mirror-matrix:
     runs-on: ubuntu-latest
     needs: prepare-release
+
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -50,14 +82,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          
+
+          echo "📄 Generating combined config list..."
+
           echo "[" > all_configs.json
-          mapfile -t files < <(find configs/ -name "*.json")
+
+          mapfile -t files < <(find configs/ -name "*.json" | sort)
+
           for i in "${!files[@]}"; do
             cat "${files[$i]}" >> all_configs.json
-            [[ $((i+1)) -lt ${#files[@]} ]] && echo "," >> all_configs.json
+
+            if [[ $((i + 1)) -lt ${#files[@]} ]]; then
+              echo "," >> all_configs.json
+            fi
           done
+
           echo "]" >> all_configs.json
+
+          echo "✅ Generated all_configs.json"
+          jq length all_configs.json
 
       - name: Resolve Unique Projects
         id: set-matrix
@@ -70,124 +113,246 @@ jobs:
           import os
           import subprocess
           import shutil
-          
-          with open('all_configs.json', 'r') as f:
+
+          with open("all_configs.json", "r") as f:
               configs = json.load(f)
-          
+
           unique_toolchains = {}
+       
           TOOLCHAIN_MAP = {
               "clang/host/linux-x86": "clang",
               "prebuilts/rust": "rust",
               "prebuilts/clang-tools": "clang-tools",
               "prebuilts/build-tools": "build-tools",
-              "AnyKernel3": "AnyKernel3"
           }
-          
+
           print(f"Processing {len(configs)} configurations...")
           print("-" * 50)
-          
+
           for cfg in configs:
-              op_model = cfg.get('model', 'Unknown')
-              op_branch = cfg.get('branch', '')
-              op_manifest = cfg.get('manifest', '')
-              op_os_version = cfg.get('os_version', '').lower()
-              
+              op_model = cfg.get("model", "Unknown")
+              op_branch = cfg.get("branch", "")
+              op_manifest = cfg.get("manifest", "")
+              op_os_version = cfg.get("os_version", "").lower()
+
               xml_file = "temp_manifest.xml"
-              
+
               try:
                   if op_manifest.startswith("https://"):
-                      subprocess.run(f"curl -LfsS {op_manifest} -o {xml_file}", shell=True, check=True)
+                      subprocess.run(
+                          ["curl", "-LfsS", op_manifest, "-o", xml_file],
+                          check=True,
+                      )
                   elif op_branch.startswith("wild/"):
-                      shutil.copy(f"manifests/{op_os_version}/{op_manifest}", xml_file)
+                      shutil.copy(
+                          f"manifests/{op_os_version}/{op_manifest}",
+                          xml_file,
+                      )
                   else:
                       url = f"https://raw.githubusercontent.com/OnePlusOSS/kernel_manifest/refs/heads/{op_branch}/{op_manifest}"
-                      subprocess.run(f"curl -LfsS {url} -o {xml_file}", shell=True, check=True)
-                  
+                      subprocess.run(
+                          ["curl", "-LfsS", url, "-o", xml_file],
+                          check=True,
+                      )
+
                   root = ET.parse(xml_file).getroot()
-                  remotes = {r.get('name'): r.get('fetch').rstrip('/') for r in root.findall('remote')}
-                  default = root.find('default')
-                  def_remote = default.get('remote')
-                  def_rev = default.get('revision')
-                  
-                  for project in root.findall('project'):
-                      name = project.get('name')
+
+                  remotes = {
+                      r.get("name"): r.get("fetch").rstrip("/")
+                      for r in root.findall("remote")
+                      if r.get("name") and r.get("fetch")
+                  }
+
+                  default = root.find("default")
+                  def_remote = default.get("remote") if default is not None else None
+                  def_rev = default.get("revision") if default is not None else None
+
+                  for project in root.findall("project"):
+                      name = project.get("name")
+
+                      if not name:
+                          continue
+
                       type_label = None
-                      
+
                       for repo_key, label in TOOLCHAIN_MAP.items():
-                        if repo_key in name:
-                            type_label = label
-                            break
-                      
-                      if type_label:
-                        remote_name = project.get('remote', def_remote)
-                        rev = project.get('revision', def_rev)
-                        base_url = remotes.get(remote_name, "").rstrip('/')
-                        cache_filename = f"{type_label}-{rev}.tar.gz"
-                        
-                        if cache_filename not in unique_toolchains:
-                            if "googlesource.com" in base_url:
-                                dl_url = f"{base_url}/{name}/+archive/{rev}.tar.gz"
-                            elif "github.com" in base_url:
-                                dl_url = f"{base_url}/{name}/archive/{rev}.tar.gz"
-                            elif "git.codelinaro.org" in base_url or "gitlab.com" in base_url:
-                                dl_url = f"{base_url}/{name}/-/archive/{rev}.tar.gz"
-                            else:
-                                error_msg = f"❌ [FATAL] Unknown toolchain provider for: {base_url}"
-                                print(f"::error::{error_msg}")
-                                raise ValueError(error_msg)
-                            unique_toolchains[cache_filename] = {"rev": rev, "url": dl_url, "name": name, "type_label": type_label, "cache_file": cache_filename}
-                            print(f"🆕 [{op_model}][{op_os_version}] -> New {type_label} found: {rev}")
-                        else:
-                            print(f"♻️ [{op_model}][{op_os_version}] -> Using existing {type_label}: {rev}")
+                          if repo_key in name:
+                              type_label = label
+                              break
+
+                      if not type_label:
+                          continue
+
+                      remote_name = project.get("remote", def_remote)
+                      rev = project.get("revision", def_rev)
+
+                      if not remote_name or not rev:
+                          print(f"⚠️ Skipping {name}: missing remote or revision")
+                          continue
+
+                      base_url = remotes.get(remote_name, "").rstrip("/")
+
+                      if not base_url:
+                          print(f"⚠️ Skipping {name}: unknown remote '{remote_name}'")
+                          continue
+
+                      cache_filename = f"{type_label}-{rev}.tar.gz"
+
+                      if cache_filename in unique_toolchains:
+                          print(f"♻️ [{op_model}][{op_os_version}] -> Using existing {type_label}: {rev}")
+                          continue
+
+                      if "googlesource.com" in base_url:
+                          dl_url = f"{base_url}/{name}/+archive/{rev}.tar.gz"
+                      elif "github.com" in base_url:
+                          dl_url = f"{base_url}/{name}/archive/{rev}.tar.gz"
+                      elif "git.codelinaro.org" in base_url or "gitlab.com" in base_url:
+                          dl_url = f"{base_url}/{name}/-/archive/{rev}.tar.gz"
+                      else:
+                          error_msg = f"❌ [FATAL] Unknown toolchain provider for: {base_url}"
+                          print(f"::error::{error_msg}")
+                          raise ValueError(error_msg)
+
+                      unique_toolchains[cache_filename] = {
+                          "rev": rev,
+                          "url": dl_url,
+                          "name": name,
+                          "type_label": type_label,
+                          "cache_file": cache_filename,
+                      }
+
+                      print(f"🆕 [{op_model}][{op_os_version}] -> New {type_label} found: {rev}")
+
               except Exception as e:
                   print(f"⚠️ Failed to process {op_manifest}: {e}")
-          matrix = {"include": list(unique_toolchains.values())}
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+
+          matrix = {
+              "include": list(unique_toolchains.values())
+          }
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"matrix={json.dumps(matrix)}\n")
+
           print(f"✅ Found {len(unique_toolchains)} unique projects to mirror.")
 
   mirror-to-release:
-    name: build (${{ matrix.type_label }}, ${{ matrix.rev }})
-    needs: [prepare-release, generate-mirror-matrix]
+    name: mirror (${{ matrix.type_label }}, ${{ matrix.rev }})
+    needs:
+      - prepare-release
+      - generate-mirror-matrix
+
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.generate-mirror-matrix.outputs.matrix) }}
+
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     steps:
       - name: Sync & Upload
+        shell: bash
         run: |
+          set -euo pipefail
+
           TARGET_REPO="${{ github.repository }}"
+          TAG_NAME="toolchain-cache"
           REV="${{ matrix.rev }}"
           FILENAME="${{ matrix.cache_file }}"
-          BASE_URL="https://github.com/${TARGET_REPO}/releases/download/toolchain-cache"
-          
-          echo "🔍 Checking if $FILENAME exists in mirror..."
-          
-          STATUS=$(curl -IsL -o /dev/null -w "%{http_code}" "$BASE_URL/$FILENAME")
-          PART_STATUS=$(curl -IsL -o /dev/null -w "%{http_code}" "$BASE_URL/${FILENAME}.partaa")
-          
-          if [ "$STATUS" -eq 200 ] || [ "$PART_STATUS" -eq 200 ]; then
-            echo "✅ ${{ matrix.type_label }} revision ${{ matrix.rev }} already cached."
+          SOURCE_URL="${{ matrix.url }}"
+          TYPE_LABEL="${{ matrix.type_label }}"
+          BASE_URL="https://github.com/${TARGET_REPO}/releases/download/${TAG_NAME}"
+
+          echo "============================================================"
+          echo "📦 Toolchain Mirror Job"
+          echo "============================================================"
+          echo "Repository: $TARGET_REPO"
+          echo "Release:    $TAG_NAME"
+          echo "Type:       $TYPE_LABEL"
+          echo "Revision:   $REV"
+          echo "Filename:   $FILENAME"
+          echo "Source URL: $SOURCE_URL"
+          echo "============================================================"
+
+          echo "🔍 Verifying GitHub Release exists..."
+
+          if gh release view "$TAG_NAME" --repo "$TARGET_REPO" >/dev/null 2>&1; then
+            echo "✅ Release '$TAG_NAME' exists."
           else
-            echo "📥 Not found. Downloading ${{ matrix.type_label }} from source..."
-            
-            aria2c -x16 -s16 -k1M -j5 --file-allocation=none --console-log-level=error --summary-interval=0 --retry-wait=5 --max-tries=10 -o "$FILENAME" "${{ matrix.url }}"
-            
-            FILE_SIZE=$(stat -c%s "$FILENAME")
-            MAX_SIZE=2000000000 # ~1.86GB
-            
-            if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
-              echo "⚠️ File > 2GB. Splitting..."
-              split -b 1500M -a 2 "$FILENAME" "${FILENAME}.part"
-              
-              for part in "${FILENAME}".part*; do
+            echo "⚠️ Release '$TAG_NAME' missing. Creating it now..."
+
+            gh release create "$TAG_NAME" \
+              --repo "$TARGET_REPO" \
+              --title "Toolchains Mirror Cache" \
+              --notes "Deduplicated Toolchains for Kernel Build" \
+              --latest=false
+
+            echo "✅ Release '$TAG_NAME' created."
+          fi
+
+          echo "🔍 Checking if $FILENAME exists in mirror..."
+
+          STATUS=$(curl -IsL -o /dev/null -w "%{http_code}" "$BASE_URL/$FILENAME" || echo "000")
+          PART_STATUS=$(curl -IsL -o /dev/null -w "%{http_code}" "$BASE_URL/${FILENAME}.partaa" || echo "000")
+
+          echo "Single file status: $STATUS"
+          echo "Part file status:   $PART_STATUS"
+
+          if [ "$STATUS" = "200" ] || [ "$PART_STATUS" = "200" ]; then
+            echo "✅ $TYPE_LABEL revision $REV already cached."
+            exit 0
+          fi
+
+          echo "📥 Not found. Downloading $TYPE_LABEL from source..."
+
+          aria2c \
+            -x4 \
+            -s4 \
+            -k1M \
+            -j5 \
+            --file-allocation=none \
+            --console-log-level=error \
+            --summary-interval=0 \
+            --retry-wait=5 \
+            --max-tries=10 \
+            --allow-overwrite=true \
+            -o "$FILENAME" \
+            "$SOURCE_URL"
+
+          if [ ! -f "$FILENAME" ]; then
+            echo "::error::Downloaded file missing: $FILENAME"
+            exit 1
+          fi
+
+          FILE_SIZE=$(stat -c%s "$FILENAME")
+          MAX_SIZE=2000000000 # ~1.86GB
+
+          echo "📏 File size: $FILE_SIZE bytes"
+
+          if [ "$FILE_SIZE" -le 0 ]; then
+            echo "::error::Downloaded file is empty: $FILENAME"
+            exit 1
+          fi
+
+          if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
+            echo "⚠️ File > 2GB. Splitting..."
+            split -b 1500M -a 2 "$FILENAME" "${FILENAME}.part"
+
+            for part in "${FILENAME}".part*; do
+              if [ -f "$part" ]; then
                 echo "📤 Uploading $part..."
-                gh release upload "toolchain-cache" "$part" --clobber --repo "$TARGET_REPO"
-              done
-            else
-              echo "📤 Uploading single file..."
-              gh release upload "toolchain-cache" "$FILENAME" --clobber --repo "$TARGET_REPO"
-            fi
+                gh release upload "$TAG_NAME" "$part" --clobber --repo "$TARGET_REPO"
+              fi
+            done
+
+            echo "✅ Uploaded split archive parts for $FILENAME"
+          else
+            echo "📤 Uploading single file..."
+            gh release upload "$TAG_NAME" "$FILENAME" --clobber --repo "$TARGET_REPO"
+
+            echo "✅ Uploaded $FILENAME"
           fi
