@@ -128,8 +128,7 @@ jobs:
 
           # IMPORTANT:
           # Do NOT add AnyKernel3 here.
-          # AnyKernel3 must be synced directly from the manifest, not mirrored
-          # into the toolchain-cache release.
+          # AnyKernel3 must be synced directly from the manifest.
           TOOLCHAIN_MAP = {
               "clang/host/linux-x86": "clang",
               "prebuilts/rust": "rust",
@@ -234,11 +233,9 @@ jobs:
                       elif "git.codelinaro.org" in base_url or "gitlab.com" in base_url:
                           provider = "gitlab"
 
-                          # Canonical GitLab/CodeLinaro archive URL:
-                          # /-/archive/<ref>/<repo-leaf>-<ref>.tar.gz
-                          #
-                          # Example:
-                          # .../linux-x86/-/archive/<rev>/linux-x86-<rev>.tar.gz
+                          # Canonical GitLab/CodeLinaro archive URL.
+                          # We still record it for logs, but GitLab/CodeLinaro jobs
+                          # will skip HTTP archive download and use git archive locally.
                           dl_url = f"{base_url}/{name}/-/archive/{rev}/{repo_leaf}-{rev}.tar.gz"
                           clone_url = f"{base_url}/{name}.git"
 
@@ -468,20 +465,24 @@ jobs:
               git checkout --force FETCH_HEAD
 
             else
-              echo "⚠️ Direct revision fetch failed. Trying remote refs fallback..."
+              echo "⚠️ Direct revision fetch failed."
+              echo "🔁 Trying advertised refs fallback..."
 
               git \
                 -c http.userAgent="Mozilla/5.0 GitHub-Actions" \
                 fetch \
                 --no-tags \
-                --depth=50 \
+                --depth=100 \
                 origin \
                 '+refs/heads/*:refs/remotes/origin/*'
 
               if git cat-file -e "${REV}^{commit}" 2>/dev/null; then
+                echo "✅ Revision found after refs fallback."
                 git checkout --force "$REV"
               else
                 echo "::error::Revision $REV was not found after fallback fetch."
+                echo "Available remote refs:"
+                git branch -r || true
                 exit 1
               fi
             fi
@@ -503,11 +504,13 @@ jobs:
 
           download_ok=false
 
-          # CodeLinaro clang archive generation is extremely flaky.
-          # It often hangs forever at 0B/0B or returns 403.
-          # For clang on GitLab/CodeLinaro, skip HTTP archive and create the archive locally.
-          if [ "$PROVIDER" = "gitlab" ] && [ "$TYPE_LABEL" = "clang" ]; then
-            echo "🧰 CodeLinaro/GitLab clang detected. Skipping HTTP archive and using git fallback directly."
+          # CodeLinaro/GitLab archive generation is flaky for ALL prebuilts:
+          # clang, build-tools, rust, clang-tools, etc.
+          # It often hangs at 0B/0B or returns 403/timeout.
+          # So for GitLab/CodeLinaro providers, skip HTTP archive entirely.
+          if [ "$PROVIDER" = "gitlab" ]; then
+            echo "🧰 CodeLinaro/GitLab toolchain detected: $TYPE_LABEL"
+            echo "🧰 Skipping HTTP archive and using git fetch + git archive directly."
             create_archive_from_git
             download_ok=true
           else
@@ -523,7 +526,7 @@ jobs:
                 echo "⚠️ curl archive download also failed."
                 rm -f "$FILENAME"
 
-                if [ "$PROVIDER" = "gitlab" ] || [ "$PROVIDER" = "github" ]; then
+                if [ "$PROVIDER" = "github" ]; then
                   create_archive_from_git
                   download_ok=true
                 else
