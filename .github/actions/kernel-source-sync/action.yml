@@ -4,31 +4,45 @@ inputs:
   source_location:
     description: 'Folder path to save Kernel source'
     required: true
-    type: string
+
   github_token:
     description: 'GitHub Token'
     required: true
+
   debug:
     description: 'Enable Logs'
     required: false
-    type: boolean
-    default: false
+    default: 'false'
 
 runs:
   using: 'composite'
+
   steps:
     - name: Download and Prepare Manifest
       shell: bash
       working-directory: ${{ inputs.source_location }}
       run: |
-        # Download and Prepare Manifest
+        set -euo pipefail
+
+        echo "📄 Preparing manifest..."
+
         if [[ "$OP_MANIFEST" == https://* ]]; then
+          echo "Downloading manifest from URL: $OP_MANIFEST"
           curl --fail --show-error --location --proto '=https' "$OP_MANIFEST" -o manifest.xml
+
         elif [[ "$OP_BRANCH" == wild/* ]]; then
-          cp "../manifests/$(echo "$OP_OS_VERSION" | tr '[:upper:]' '[:lower:]')/$OP_MANIFEST" manifest.xml
+          MANIFEST_PATH="../manifests/$(echo "$OP_OS_VERSION" | tr '[:upper:]' '[:lower:]')/$OP_MANIFEST"
+          echo "Using local manifest: $MANIFEST_PATH"
+          cp "$MANIFEST_PATH" manifest.xml
+
         else
-          curl --fail --show-error --location --proto '=https' "https://raw.githubusercontent.com/OnePlusOSS/kernel_manifest/refs/heads/$OP_BRANCH/$OP_MANIFEST" -o manifest.xml
+          MANIFEST_URL="https://raw.githubusercontent.com/OnePlusOSS/kernel_manifest/refs/heads/$OP_BRANCH/$OP_MANIFEST"
+          echo "Downloading OnePlus manifest: $MANIFEST_URL"
+          curl --fail --show-error --location --proto '=https' "$MANIFEST_URL" -o manifest.xml
         fi
+
+        echo "✅ Manifest ready:"
+        ls -lh manifest.xml
 
     - name: Download Manifest Archives
       shell: python
@@ -36,222 +50,388 @@ runs:
         PYTHONUNBUFFERED: "1"
         GITHUB_TOKEN: ${{ inputs.github_token }}
         DEBUG: ${{ inputs.debug }}
+        TARGET_REPO: ${{ github.repository }}
       working-directory: ${{ inputs.source_location }}
       run: |
-        # Download Manifest Archives
         import xml.etree.ElementTree as ET
         import subprocess
-        import os, shutil
+        import os
+        import shutil
         import time
         import glob
         from concurrent.futures import ThreadPoolExecutor
-        import requests
-        
+
         MAX_WORKERS = (os.cpu_count() or 2) * 4
         NPROC = int(subprocess.check_output("nproc", shell=True).strip())
-        TARGET_REPO = "${{ github.repository }}"
+
+        TARGET_REPO = os.environ.get("TARGET_REPO")
+        DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
+       
         TOOLCHAIN_MAP = {
             "clang/host/linux-x86": "clang",
             "prebuilts/rust": "rust",
             "prebuilts/clang-tools": "clang-tools",
             "prebuilts/build-tools": "build-tools",
-            "AnyKernel3": "AnyKernel3"
         }
-        DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
-        aria_quiet_flags = "--quiet --summary-interval=0" if not DEBUG else ""
-        
+
+        aria_quiet_flags = "--quiet --summary-interval=0" if not DEBUG else "--summary-interval=5"
+
         curl_headers = (
-            "-H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' "
+            "-H 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' "
             "-H 'Accept: */*' "
             "-H 'Connection: keep-alive' "
             "--tcp-fastopen"
         )
-        
+
         aria2_headers = (
-            "--header='User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' "
+            "--header='User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' "
             "--header='Accept: */*' "
-            "--header='Connection: keep-alive' "
+            "--header='Connection: keep-alive'"
         )
-        
+
         print("::group::Download Manifest Archives")
-        
+
+        def run_cmd(cmd, debug_label=None):
+            if DEBUG and debug_label:
+                print(debug_label)
+                print(cmd)
+
+            return subprocess.run(
+                cmd,
+                shell=True,
+                check=True,
+                capture_output=not DEBUG,
+            )
+
+        def detect_toolchain_label(name):
+            for repo_key, type_label in TOOLCHAIN_MAP.items():
+                if repo_key in name:
+                    return type_label
+            return None
+
         def sync_project(task):
             name, path, url, strip, rev = task
+
             if path not in ["./", "."]:
                 os.makedirs(path, exist_ok=True)
-            
+
             start_time = time.time()
-            MAX_ATTEMPTS = 3
-            for attempt in range(1, MAX_ATTEMPTS + 1):
-                shm_workspace = f"/dev/shm/sync_{hash(name) % 1000000}"
+            max_attempts = 3
+
+            for attempt in range(1, max_attempts + 1):
+                shm_workspace = f"/dev/shm/sync_{abs(hash(name)) % 1000000}"
+
                 if os.path.exists(shm_workspace):
                     shutil.rmtree(shm_workspace, ignore_errors=True)
+
                 os.makedirs(shm_workspace, exist_ok=True)
-                
+
                 print(f"Syncing: {name} -> {path}")
                 print(f"  [PENDING] {name}")
+
                 try:
-                    label = None
-                    for repo_key, type_label in TOOLCHAIN_MAP.items():
-                        if repo_key in name:
-                            label = type_label
-                            break
-                    
+                    label = detect_toolchain_label(name)
                     found_in_cache = False
+
                     if label:
                         base_filename = f"{label}-{rev}.tar.gz"
-                        BASE_URL = f"https://github.com/{TARGET_REPO}/releases/download/toolchain-cache"
-                        
-                        check_single = f"curl -IsL {curl_headers} --retry 10 --connect-timeout 30 -o /dev/null -w '%{{http_code}}' {BASE_URL}/{base_filename}"
-                        if subprocess.check_output(check_single, shell=True).decode().strip() == "200":
-                            if DEBUG: print(f"  [CACHE] Downloading single file: {base_filename}")
-                            aria_cmd = f"aria2c -x16 -s16 -k1M -j16 --retry-wait=5 --max-tries=10 -d {shm_workspace} --file-allocation=none {aria_quiet_flags} {aria2_headers} -o {base_filename} {BASE_URL}/{base_filename}"
-                            subprocess.run(aria_cmd, shell=True, check=True, capture_output=not DEBUG)
+                        base_url = f"https://github.com/{TARGET_REPO}/releases/download/toolchain-cache"
+
+                        print(f"  [CACHE] Toolchain detected: {base_filename}")
+
+                        check_single = (
+                            f"curl -IsL {curl_headers} "
+                            f"--retry 10 "
+                            f"--connect-timeout 30 "
+                            f"-o /dev/null "
+                            f"-w '%{{http_code}}' "
+                            f"{base_url}/{base_filename}"
+                        )
+
+                        single_status = subprocess.check_output(check_single, shell=True).decode().strip()
+
+                        if single_status == "200":
+                            print(f"  [CACHE] Found single cached archive: {base_filename}")
+
+                            aria_cmd = (
+                                f"aria2c "
+                                f"-x4 "
+                                f"-s4 "
+                                f"-k1M "
+                                f"-j8 "
+                                f"--retry-wait=5 "
+                                f"--max-tries=10 "
+                                f"--file-allocation=none "
+                                f"--allow-overwrite=true "
+                                f"-d {shm_workspace} "
+                                f"-o {base_filename} "
+                                f"{aria_quiet_flags} "
+                                f"{aria2_headers} "
+                                f"{base_url}/{base_filename}"
+                            )
+
+                            run_cmd(aria_cmd, f"  [CACHE] Downloading {base_filename}")
                             found_in_cache = True
+
                         else:
-                            if DEBUG: print(f"  [CACHE] Single file not found, checking parts for {base_filename}...")
+                            print(f"  [CACHE] Single archive not found. Checking split parts...")
+
                             parts_to_download = []
+
                             for suffix in [f"a{c}" for c in "abcdefghijklmnopqrstuvwxyz"]:
                                 part_name = f"{base_filename}.part{suffix}"
-                                check_part = f"curl -IsL {curl_headers} --retry 10 --connect-timeout 30 -o /dev/null -w '%{{http_code}}' {BASE_URL}/{part_name}"
-                                if subprocess.check_output(check_part, shell=True).decode().strip() == "200":
-                                    parts_to_download.append(f"{BASE_URL}/{part_name}")
+                                part_url = f"{base_url}/{part_name}"
+
+                                check_part = (
+                                    f"curl -IsL {curl_headers} "
+                                    f"--retry 10 "
+                                    f"--connect-timeout 30 "
+                                    f"-o /dev/null "
+                                    f"-w '%{{http_code}}' "
+                                    f"{part_url}"
+                                )
+
+                                part_status = subprocess.check_output(check_part, shell=True).decode().strip()
+
+                                if part_status == "200":
+                                    parts_to_download.append((part_url, part_name))
                                 else:
                                     break
-                            
+
                             if parts_to_download:
-                                if DEBUG: print(f"  [CACHE] Found {len(parts_to_download)} parts. Downloading...")
-                                
-                                input_file_path = f"{base_filename}.urls"
+                                print(f"  [CACHE] Found {len(parts_to_download)} split parts.")
+
+                                input_file_path = os.path.join(shm_workspace, f"{base_filename}.urls")
+
                                 with open(input_file_path, "w") as f:
-                                    for part_url in parts_to_download:
-                                        p_suffix = part_url.split('.part')[-1]
-                                        p_name = f"{base_filename}.part{p_suffix}"
-                                        f.write(f"{part_url}\n  out={p_name}\n")
-                                
+                                    for part_url, part_name in parts_to_download:
+                                        f.write(f"{part_url}\n")
+                                        f.write(f"  out={part_name}\n")
+
                                 aria_bulk_cmd = (
-                                    f"aria2c -x16 -s16 -k1M -j16 --retry-wait=5 --max-tries=10 -d {shm_workspace} --file-allocation=none "
-                                    f"{aria_quiet_flags} {aria2_headers} "
+                                    f"aria2c "
+                                    f"-x4 "
+                                    f"-s4 "
+                                    f"-k1M "
+                                    f"-j8 "
+                                    f"--retry-wait=5 "
+                                    f"--max-tries=10 "
+                                    f"--file-allocation=none "
+                                    f"--allow-overwrite=true "
+                                    f"-d {shm_workspace} "
+                                    f"{aria_quiet_flags} "
+                                    f"{aria2_headers} "
                                     f"--input-file={input_file_path}"
                                 )
-                                
-                                subprocess.run(aria_bulk_cmd, shell=True, check=True, capture_output=not DEBUG)
-                                os.remove(input_file_path)
+
+                                run_cmd(aria_bulk_cmd, f"  [CACHE] Downloading split parts for {base_filename}")
                                 found_in_cache = True
-                            
+
                         if not found_in_cache:
                             print(f"::error::[FATAL ERROR] Toolchain {base_filename} NOT FOUND in GitHub Release cache!")
-                            print(f"::error::[FATAL ERROR] Please Run Mirror Toolchain Workflow or select sync toolchain during build!!!")
+                            print("::error::[FATAL ERROR] Please run the Mirror Toolchain workflow first.")
                             return False
-                    
+
                     if found_in_cache:
-                        parts = sorted(glob.glob(os.path.join(shm_workspace, f"*.part*")))
-                        source = f"cat {' '.join(parts)} | " if parts else f"cat {os.path.join(shm_workspace, base_filename)} | "
-                        extract_cmd = f"{source} tar -I 'pigz -p {NPROC} -b 256' -x --record-size=1M --no-same-owner -C {path} {strip}"
-                        subprocess.run(extract_cmd, shell=True, check=True)
+                        parts = sorted(glob.glob(os.path.join(shm_workspace, "*.part*")))
+
+                        if parts:
+                            part_list = " ".join(parts)
+                            extract_cmd = (
+                                f"cat {part_list} | "
+                                f"tar -I 'pigz -p {NPROC} -b 256' "
+                                f"-x "
+                                f"--record-size=1M "
+                                f"--no-same-owner "
+                                f"-C {path} "
+                                f"{strip}"
+                            )
+                        else:
+                            archive_path = os.path.join(shm_workspace, base_filename)
+                            extract_cmd = (
+                                f"cat {archive_path} | "
+                                f"tar -I 'pigz -p {NPROC} -b 256' "
+                                f"-x "
+                                f"--record-size=1M "
+                                f"--no-same-owner "
+                                f"-C {path} "
+                                f"{strip}"
+                            )
+
+                        run_cmd(extract_cmd, f"  [CACHE] Extracting cached archive for {name}")
+
                     else:
-                        direct_file = f"dynamic_file.tar.gz"
+                        direct_file = "dynamic_file.tar.gz"
                         archive_path = os.path.join(shm_workspace, direct_file)
-                        aria_cmd = f"aria2c -x16 -s16 -k1M -j16 --allow-overwrite=true --retry-wait=5 --max-tries=10 -d {shm_workspace} -o {direct_file} {aria_quiet_flags} {aria2_headers} '{url}'"
-                        if DEBUG: print(f"  [DIRECT] Fetching: {url}")
-                        subprocess.run(aria_cmd, shell=True, check=True, capture_output=not DEBUG)
-                        extract_cmd = f"tar -I 'pigz -p {NPROC} -b 256' -x --record-size=1M -f {archive_path} -C {path} {strip}"
-                        subprocess.run(extract_cmd, shell=True, check=True)
-                    
+
+                        print(f"  [DIRECT] Fetching directly: {url}")
+
+                        aria_cmd = (
+                            f"aria2c "
+                            f"-x4 "
+                            f"-s4 "
+                            f"-k1M "
+                            f"-j8 "
+                            f"--allow-overwrite=true "
+                            f"--retry-wait=5 "
+                            f"--max-tries=10 "
+                            f"--file-allocation=none "
+                            f"-d {shm_workspace} "
+                            f"-o {direct_file} "
+                            f"{aria_quiet_flags} "
+                            f"{aria2_headers} "
+                            f"'{url}'"
+                        )
+
+                        run_cmd(aria_cmd, f"  [DIRECT] Downloading {name}")
+
+                        extract_cmd = (
+                            f"tar -I 'pigz -p {NPROC} -b 256' "
+                            f"-x "
+                            f"--record-size=1M "
+                            f"--no-same-owner "
+                            f"-f {archive_path} "
+                            f"-C {path} "
+                            f"{strip}"
+                        )
+
+                        run_cmd(extract_cmd, f"  [DIRECT] Extracting {name}")
+
                     duration = time.time() - start_time
-                    print(f"Synced {name} successfully! ({duration:.2f}s)")
+                    print(f"✅ Synced {name} successfully! ({duration:.2f}s)")
                     return True
+
                 except subprocess.CalledProcessError as e:
-                    print(f"  [RETRY {attempt}/{MAX_ATTEMPTS}] {name} failed with exit code {e.returncode}. Command: {e.cmd}")
+                    print(f"  [RETRY {attempt}/{max_attempts}] {name} failed with exit code {e.returncode}.")
                     print(f"  [ERROR] Command failed for {name}: {e.cmd}")
-                    print(f"   Stderr: {e.stderr.decode() if e.stderr else 'No stderr'}")
-                    if attempt < MAX_ATTEMPTS:
+
+                    if e.stderr:
+                        try:
+                            print(f"  [STDERR] {e.stderr.decode(errors='replace')}")
+                        except Exception:
+                            print("  [STDERR] Could not decode stderr.")
+
+                    if attempt < max_attempts:
                         time.sleep(5)
+
                 except Exception as e:
-                    print(f"  [RETRY {attempt}/{MAX_ATTEMPTS}] {name} failed with exit code {e.returncode}. Command: {e.cmd}")
-                    print(f"  [ERROR] Failed to sync {name}")
-                    if attempt < MAX_ATTEMPTS:
+                    print(f"  [RETRY {attempt}/{max_attempts}] {name} failed.")
+                    print(f"  [ERROR] {type(e).__name__}: {e}")
+
+                    if attempt < max_attempts:
                         time.sleep(5)
+
                 finally:
                     if os.path.exists(shm_workspace):
                         shutil.rmtree(shm_workspace, ignore_errors=True)
+
             return False
-        
+
         global_start = time.time()
-        
-        with open('manifest.xml', 'r') as f:
+
+        with open("manifest.xml", "r") as f:
             manifest_content = f.read()
-        
+
         root = ET.fromstring(manifest_content)
         top_dir = os.getcwd()
-        
-        remotes = {r.get('name'): r.get('fetch').rstrip('/') for r in root.findall('remote')}
-        default = root.find('default')
-        def_remote = default.get('remote') if default is not None else None
-        def_rev = default.get('revision') if default is not None else None
-        
+
+        remotes = {
+            r.get("name"): r.get("fetch").rstrip("/")
+            for r in root.findall("remote")
+            if r.get("name") and r.get("fetch")
+        }
+
+        default = root.find("default")
+        def_remote = default.get("remote") if default is not None else None
+        def_rev = default.get("revision") if default is not None else None
+
         sync_tasks = []
         post_process_data = []
-        
-        for project in root.findall('project'):
-            name = project.get('name')
-            path = project.get('path', name)
-            remote_name = project.get('remote', def_remote)
-            rev = project.get('revision', def_rev)
+
+        for project in root.findall("project"):
+            name = project.get("name")
+            path = project.get("path", name)
+            remote_name = project.get("remote", def_remote)
+            rev = project.get("revision", def_rev)
             base_url = remotes.get(remote_name)
-            
-            if not base_url: continue
-            
+
+            if not name:
+                print("⚠️ Skipping project with missing name")
+                continue
+
+            if not base_url:
+                print(f"⚠️ Skipping {name}: missing or unknown remote '{remote_name}'")
+                continue
+
+            if not rev:
+                print(f"⚠️ Skipping {name}: missing revision")
+                continue
+
+            base_url = base_url.rstrip("/")
+
             if "github.com" in base_url:
                 url = f"{base_url}/{name}/archive/{rev}.tar.gz"
                 strip = "--strip-components=1"
+
             elif "googlesource.com" in base_url:
                 url = f"{base_url}/{name}/+archive/{rev}.tar.gz"
                 strip = ""
-            elif "git.codelinaro.org" in base_url:
+
+            elif "git.codelinaro.org" in base_url or "gitlab.com" in base_url:
                 url = f"{base_url}/{name}/-/archive/{rev}.tar.gz"
                 strip = "--strip-components=1"
+
             else:
+                print(f"⚠️ Skipping {name}: unsupported remote host: {base_url}")
                 continue
-            
+
             sync_tasks.append((name, path, url, strip, rev))
-            
+
             for child in project:
-                if child.tag in ['linkfile', 'copyfile']:
+                if child.tag in ["linkfile", "copyfile"]:
                     post_process_data.append((path, child))
-        
-        if DEBUG:
-            print(f"Starting parallel sync of {len(sync_tasks)} projects...")
+
+        print(f"Starting parallel sync of {len(sync_tasks)} projects...")
+
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             success_list = list(executor.map(sync_project, sync_tasks))
-            
-            if not all(success_list):
-                print("::error::One or more projects failed to sync!")
-                print("::endgroup::")
-                exit(1)
-        
+
+        if not all(success_list):
+            print("::error::One or more projects failed to sync!")
+            print("::endgroup::")
+            exit(1)
+
         print("Processing linkfiles and copyfiles...")
+
         for path, child in post_process_data:
-            src_rel = child.get('src')
-            dest_rel = child.get('dest')
-            if not src_rel or not dest_rel: continue
-            
+            src_rel = child.get("src")
+            dest_rel = child.get("dest")
+
+            if not src_rel or not dest_rel:
+                continue
+
             src_path = os.path.join(top_dir, path, src_rel)
             dest_path = os.path.join(top_dir, dest_rel)
+
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            
-            if child.tag == 'linkfile':
-                if os.path.lexists(dest_path): os.remove(dest_path)
+
+            if child.tag == "linkfile":
+                if os.path.lexists(dest_path):
+                    os.remove(dest_path)
+
                 rel_target = os.path.relpath(src_path, os.path.dirname(dest_path))
                 os.symlink(rel_target, dest_path)
                 print(f"  [Link] {dest_rel} -> {src_rel}")
-            elif child.tag == 'copyfile':
+
+            elif child.tag == "copyfile":
                 shutil.copy2(src_path, dest_path)
                 print(f"  [Copy] {dest_rel} from {src_rel}")
-        
-        
+
         total_duration = time.time() - global_start
         minutes = int(total_duration // 60)
         seconds = total_duration % 60
+
         print(f"Kernel Sync completed in {minutes}m {seconds:.2f}s")
         print("::endgroup::")
