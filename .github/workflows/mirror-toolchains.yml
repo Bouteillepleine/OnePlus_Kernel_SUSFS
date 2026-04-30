@@ -34,12 +34,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          echo "🔄 Fetching tags..."
+          git fetch --tags --force origin || true
+
           echo "🔍 Checking Git tag..."
 
           if git rev-parse "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
             echo "✅ Tag '$TAG_NAME' already exists."
           else
-            echo "🏷️ Tag '$TAG_NAME' not found. Creating backdated tag..."
+            echo "🏷️ Tag '$TAG_NAME' not found. Creating backdated annotated tag..."
 
             GIT_COMMITTER_DATE="2015-01-01T12:00:00Z" \
             GIT_AUTHOR_DATE="2015-01-01T12:00:00Z" \
@@ -78,7 +81,6 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Generate Mirror Matrix
-        id: generate-config
         shell: bash
         run: |
           set -euo pipefail
@@ -88,6 +90,11 @@ jobs:
           echo "[" > all_configs.json
 
           mapfile -t files < <(find configs/ -name "*.json" | sort)
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No config JSON files found in configs/"
+            exit 1
+          fi
 
           for i in "${!files[@]}"; do
             cat "${files[$i]}" >> all_configs.json
@@ -121,8 +128,7 @@ jobs:
 
           # IMPORTANT:
           # Do NOT add AnyKernel3 here.
-          # AnyKernel3 should be downloaded directly from the manifest, not mirrored
-          # into the toolchain-cache release.
+          # AnyKernel3 must be synced directly from the manifest.
           TOOLCHAIN_MAP = {
               "clang/host/linux-x86": "clang",
               "prebuilts/rust": "rust",
@@ -147,11 +153,15 @@ jobs:
                           ["curl", "-LfsS", op_manifest, "-o", xml_file],
                           check=True,
                       )
+
                   elif op_branch.startswith("wild/"):
-                      shutil.copy(
-                          f"manifests/{op_os_version}/{op_manifest}",
-                          xml_file,
-                      )
+                      local_manifest = f"manifests/{op_os_version}/{op_manifest}"
+
+                      if not os.path.exists(local_manifest):
+                          raise FileNotFoundError(f"Local manifest not found: {local_manifest}")
+
+                      shutil.copy(local_manifest, xml_file)
+
                   else:
                       url = f"https://raw.githubusercontent.com/OnePlusOSS/kernel_manifest/refs/heads/{op_branch}/{op_manifest}"
                       subprocess.run(
@@ -173,6 +183,7 @@ jobs:
 
                   for project in root.findall("project"):
                       name = project.get("name")
+
                       if not name:
                           continue
 
@@ -205,12 +216,27 @@ jobs:
                           print(f"♻️ [{op_model}][{op_os_version}] -> Using existing {type_label}: {rev}")
                           continue
 
+                      provider = "unknown"
+                      repo_leaf = name.rstrip("/").split("/")[-1]
+                      repo_url = f"{base_url}/{name}"
+
                       if "googlesource.com" in base_url:
+                          provider = "googlesource"
                           dl_url = f"{base_url}/{name}/+archive/{rev}.tar.gz"
+                          clone_url = f"{base_url}/{name}"
+
                       elif "github.com" in base_url:
+                          provider = "github"
                           dl_url = f"{base_url}/{name}/archive/{rev}.tar.gz"
+                          clone_url = f"{base_url}/{name}.git"
+
                       elif "git.codelinaro.org" in base_url or "gitlab.com" in base_url:
-                          dl_url = f"{base_url}/{name}/-/archive/{rev}.tar.gz"
+                          provider = "gitlab"
+                          # Canonical GitLab/CodeLinaro archive format.
+                          # This avoids many 403 cases from the shorter /<rev>.tar.gz form.
+                          dl_url = f"{base_url}/{name}/-/archive/{rev}/{repo_leaf}-{rev}.tar.gz"
+                          clone_url = f"{base_url}/{name}.git"
+
                       else:
                           error_msg = f"❌ [FATAL] Unknown toolchain provider for: {base_url}"
                           print(f"::error::{error_msg}")
@@ -219,12 +245,19 @@ jobs:
                       unique_toolchains[cache_filename] = {
                           "rev": rev,
                           "url": dl_url,
+                          "repo_url": repo_url,
+                          "clone_url": clone_url,
+                          "repo_leaf": repo_leaf,
+                          "provider": provider,
                           "name": name,
                           "type_label": type_label,
                           "cache_file": cache_filename,
                       }
 
                       print(f"🆕 [{op_model}][{op_os_version}] -> New {type_label} found: {rev}")
+                      print(f"    Provider: {provider}")
+                      print(f"    URL:      {dl_url}")
+                      print(f"    Clone:    {clone_url}")
 
               except Exception as e:
                   print(f"⚠️ Failed to process {op_manifest}: {e}")
@@ -245,6 +278,7 @@ jobs:
       - generate-mirror-matrix
 
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     permissions:
       contents: write
@@ -257,6 +291,19 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
+      - name: Install tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "📦 Installing required tools..."
+          sudo apt-get update
+          sudo apt-get install -y aria2 pigz git
+
+          aria2c --version | head -n 1
+          pigz --version || true
+          git --version
+
       - name: Sync & Upload
         shell: bash
         run: |
@@ -264,10 +311,15 @@ jobs:
 
           TARGET_REPO="${{ github.repository }}"
           TAG_NAME="toolchain-cache"
+
           REV="${{ matrix.rev }}"
           FILENAME="${{ matrix.cache_file }}"
           SOURCE_URL="${{ matrix.url }}"
+          CLONE_URL="${{ matrix.clone_url }}"
+          REPO_LEAF="${{ matrix.repo_leaf }}"
+          PROVIDER="${{ matrix.provider }}"
           TYPE_LABEL="${{ matrix.type_label }}"
+
           BASE_URL="https://github.com/${TARGET_REPO}/releases/download/${TAG_NAME}"
 
           echo "============================================================"
@@ -278,7 +330,9 @@ jobs:
           echo "Type:       $TYPE_LABEL"
           echo "Revision:   $REV"
           echo "Filename:   $FILENAME"
+          echo "Provider:   $PROVIDER"
           echo "Source URL: $SOURCE_URL"
+          echo "Clone URL:  $CLONE_URL"
           echo "============================================================"
 
           echo "🔍 Verifying GitHub Release exists..."
@@ -297,10 +351,31 @@ jobs:
             echo "✅ Release '$TAG_NAME' created."
           fi
 
+          http_status() {
+            local url="$1"
+            local code
+
+            code="$(curl \
+              -IsL \
+              -o /dev/null \
+              -w "%{http_code}" \
+              --connect-timeout 30 \
+              --max-time 120 \
+              -A "Mozilla/5.0" \
+              -H "Accept: */*" \
+              "$url" || true)"
+
+            if [ -z "$code" ]; then
+              code="000"
+            fi
+
+            echo "$code"
+          }
+
           echo "🔍 Checking if $FILENAME exists in mirror..."
 
-          STATUS=$(curl -IsL -o /dev/null -w "%{http_code}" "$BASE_URL/$FILENAME" || echo "000")
-          PART_STATUS=$(curl -IsL -o /dev/null -w "%{http_code}" "$BASE_URL/${FILENAME}.partaa" || echo "000")
+          STATUS="$(http_status "$BASE_URL/$FILENAME")"
+          PART_STATUS="$(http_status "$BASE_URL/${FILENAME}.partaa")"
 
           echo "Single file status: $STATUS"
           echo "Part file status:   $PART_STATUS"
@@ -310,30 +385,119 @@ jobs:
             exit 0
           fi
 
+          download_with_aria2() {
+            echo "🌐 Trying aria2c with browser-like headers..."
+
+            aria2c \
+              -x1 \
+              -s1 \
+              -k1M \
+              -j1 \
+              --file-allocation=none \
+              --console-log-level=warn \
+              --summary-interval=30 \
+              --retry-wait=15 \
+              --max-tries=5 \
+              --connect-timeout=60 \
+              --timeout=600 \
+              --allow-overwrite=true \
+              --auto-file-renaming=false \
+              --header="User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" \
+              --header="Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+              --header="Accept-Language: en-US,en;q=0.9" \
+              --header="Connection: keep-alive" \
+              -o "$FILENAME" \
+              "$SOURCE_URL"
+          }
+
+          download_with_curl() {
+            echo "🌐 Trying curl fallback with long timeout..."
+
+            curl \
+              -L \
+              --fail \
+              --retry 10 \
+              --retry-delay 20 \
+              --retry-all-errors \
+              --connect-timeout 60 \
+              --max-time 7200 \
+              --speed-time 600 \
+              --speed-limit 1 \
+              -A "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36" \
+              -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+              -H "Accept-Language: en-US,en;q=0.9" \
+              -H "Connection: keep-alive" \
+              -o "$FILENAME" \
+              "$SOURCE_URL"
+          }
+
+          create_archive_from_git() {
+            echo "🧰 HTTP archive failed. Falling back to git fetch + git archive..."
+            echo "Clone URL: $CLONE_URL"
+            echo "Revision:  $REV"
+
+            rm -rf mirror-src "$FILENAME"
+
+            git init mirror-src
+            cd mirror-src
+
+            git remote add origin "$CLONE_URL"
+
+            # Fetch the exact revision. This usually works for commit hashes on GitLab/CodeLinaro.
+            git fetch --no-tags --depth=1 origin "$REV"
+
+            git checkout --force FETCH_HEAD
+
+            echo "📦 Creating tar.gz with one top-level folder:"
+            echo "Prefix: ${REPO_LEAF}-${REV}/"
+
+            git archive \
+              --format=tar \
+              --prefix="${REPO_LEAF}-${REV}/" \
+              HEAD | pigz -p "$(nproc)" > "../$FILENAME"
+
+            cd ..
+
+            rm -rf mirror-src
+          }
+
           echo "📥 Not found. Downloading $TYPE_LABEL from source..."
 
-          # CodeLinaro/GitLab archive endpoints can be flaky with too many range requests.
-          # x4/s4 is more stable than x16/s16 while still being reasonably fast.
-          aria2c \
-            -x4 \
-            -s4 \
-            -k1M \
-            -j5 \
-            --file-allocation=none \
-            --console-log-level=error \
-            --summary-interval=0 \
-            --retry-wait=5 \
-            --max-tries=10 \
-            --allow-overwrite=true \
-            -o "$FILENAME" \
-            "$SOURCE_URL"
+          download_ok=false
+
+          if download_with_aria2; then
+            download_ok=true
+          else
+            echo "⚠️ aria2c failed."
+            rm -f "$FILENAME"
+
+            if download_with_curl; then
+              download_ok=true
+            else
+              echo "⚠️ curl archive download also failed."
+              rm -f "$FILENAME"
+
+              if [ "$PROVIDER" = "gitlab" ] || [ "$PROVIDER" = "github" ]; then
+                create_archive_from_git
+                download_ok=true
+              else
+                echo "::error::No git fallback configured for provider: $PROVIDER"
+                download_ok=false
+              fi
+            fi
+          fi
+
+          if [ "$download_ok" != "true" ]; then
+            echo "::error::Failed to download or create source archive: $SOURCE_URL"
+            exit 1
+          fi
 
           if [ ! -f "$FILENAME" ]; then
             echo "::error::Downloaded file missing: $FILENAME"
             exit 1
           fi
 
-          FILE_SIZE=$(stat -c%s "$FILENAME")
+          FILE_SIZE="$(stat -c%s "$FILENAME")"
           MAX_SIZE=2000000000 # ~1.86GB
 
           echo "📏 File size: $FILE_SIZE bytes"
@@ -343,16 +507,35 @@ jobs:
             exit 1
           fi
 
+          echo "🧪 Validating archive..."
+
+          if ! tar -tzf "$FILENAME" >/dev/null 2>&1; then
+            echo "::error::Downloaded/generated file is not a valid tar.gz archive: $FILENAME"
+            file "$FILENAME" || true
+            head -c 500 "$FILENAME" || true
+            exit 1
+          fi
+
+          echo "✅ Archive validation passed."
+
           if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
             echo "⚠️ File > 2GB. Splitting..."
             split -b 1500M -a 2 "$FILENAME" "${FILENAME}.part"
+
+            uploaded_any=false
 
             for part in "${FILENAME}".part*; do
               if [ -f "$part" ]; then
                 echo "📤 Uploading $part..."
                 gh release upload "$TAG_NAME" "$part" --clobber --repo "$TARGET_REPO"
+                uploaded_any=true
               fi
             done
+
+            if [ "$uploaded_any" != "true" ]; then
+              echo "::error::File was marked as large, but no split parts were created."
+              exit 1
+            fi
 
             echo "✅ Uploaded split archive parts for $FILENAME"
           else
