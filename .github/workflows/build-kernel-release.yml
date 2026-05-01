@@ -439,52 +439,131 @@ jobs:
           retention-days: 7
 
       - name: 📊 Build plan summary
+        shell: bash
+        env:
+          MATRIX_JSON: ${{ steps.set-matrix.outputs.matrix }}
+          BUILD_TARGET_COUNT: ${{ steps.set-matrix.outputs.count }}
+          ACTIVE_GKI_KEYS: ${{ steps.set-matrix.outputs.active_gki_keys }}
+
+          KSU_OPTIONS_NORMALIZED: ${{ steps.set-matrix.outputs.ksu_options_normalized }}
+          KSU_RESOLVED_HASH: ${{ steps.set-matrix.outputs.ksu_resolved_hash }}
+
+          SUSFS_HASH_ANDROID12_5_10: ${{ steps.set-matrix.outputs.susfs_hash_android12_5_10 }}
+          SUSFS_HASH_ANDROID13_5_15: ${{ steps.set-matrix.outputs.susfs_hash_android13_5_15 }}
+          SUSFS_HASH_ANDROID14_6_1: ${{ steps.set-matrix.outputs.susfs_hash_android14_6_1 }}
+          SUSFS_HASH_ANDROID15_6_6: ${{ steps.set-matrix.outputs.susfs_hash_android15_6_6 }}
+          SUSFS_HASH_ANDROID16_6_12: ${{ steps.set-matrix.outputs.susfs_hash_android16_6_12 }}
         run: |
-          ksu_type="${{ fromJSON(steps.set-matrix.outputs.ksu_options_normalized)[0].type }}"
-          ksu_ref="${{ fromJSON(steps.set-matrix.outputs.ksu_options_normalized)[0].hash }}"
-          
-          ksu_display=""
-          if [ "$ksu_type" = "KSUN" ] || [ "$ksu_type" = "KSU" ]; then
-            if [[ "$ksu_ref" =~ ^[0-9a-f]{40}$ ]]; then
-              ksu_display+="📌 \`$ksu_type\`, \`$ksu_ref\`"
-            else
-              ksu_display+="🔀 \`$ksu_type\`, \`$ksu_ref\` (\`${{ steps.set-matrix.outputs.ksu_resolved_hash }}\`)"
-            fi
+          set -euo pipefail
+
+          matrix_json="$MATRIX_JSON"
+
+          target_model_display="${{ inputs.target_model }}"
+          target_model_display="$(printf '%s' "$target_model_display" | xargs || true)"
+
+          if [ -z "$target_model_display" ]; then
+            target_model_display="All matching models"
           fi
-          
+
+          ksu_display_lines=""
+
+          while IFS=$'\t' read -r ksu_type ksu_ref ksu_resolved; do
+            case "$ksu_type" in
+              KSUN)
+                ksu_label="KernelSU Next"
+                ;;
+              KSU)
+                ksu_label="KernelSU"
+                ;;
+              RSKSU)
+                ksu_label="ReSukiSU"
+                ;;
+              SUKISU)
+                ksu_label="SukiSU Ultra"
+                ;;
+              *)
+                ksu_label="$ksu_type"
+                ;;
+            esac
+
+            if [[ "$ksu_ref" =~ ^[0-9a-f]{40}$ ]]; then
+              ksu_display_lines+="- KSU Config: 📌 \`$ksu_label\`, \`$ksu_ref\`"$'\n'
+            else
+              ksu_display_lines+="- KSU Config: 🔀 \`$ksu_label\`, \`$ksu_ref\` (\`$ksu_resolved\`)"$'\n'
+            fi
+          done < <(
+            jq -r '
+              .include
+              | unique_by(.ksu_type, .ksu_hash, .ksu_resolved_hash)[]
+              | [.ksu_type, .ksu_hash, .ksu_resolved_hash]
+              | @tsv
+            ' <<< "$matrix_json"
+          )
+
           build_ts_input="${{ inputs.build_timestamp }}"
+
           if [ -z "$build_ts_input" ]; then
             build_ts_display="⏱️ auto (current build time)"
           else
             build_ts_display="📌 \`$build_ts_input\`"
           fi
-          
+
           {
-            cat << 'EOF'
-          ## 🎯 Build Plan
-          
-          **Target:** ${{ inputs.op_model }}
-          **Model Filter:** ${{ inputs.target_model || 'all matching models' }}
-          **Devices:** ${{ steps.set-matrix.outputs.count }}  
-          
-          **Configuration:**
-          EOF
-          
-            echo "- KSU Config: $ksu_display"
+            echo "## 🎯 Build Plan"
+            echo ""
+            echo "| Item | Value |"
+            echo "|------|-------|"
+            echo "| **Target Group** | \`${{ inputs.op_model }}\` |"
+            echo "| **Target Model** | \`$target_model_display\` |"
+            echo "| **Build Targets** | \`$BUILD_TARGET_COUNT\` |"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## ⚙️ Configuration"
+            echo ""
+            printf '%s' "$ksu_display_lines"
             echo "- Build Timestamp: $build_ts_display"
-          
-            cat << 'EOF'
-          - Optimization: ${{ inputs.optimize_level }}
-          - Clean Build/No Ccache: ${{ inputs.clean_build && '✅ Yes' || '❌ No' }}
-          - Create Release: ${{ inputs.make_release && '✅ Yes' || '❌ No' }}
-          - Create Debug Artifacts: ${{ inputs.debug && '✅ Yes' || '❌ No' }}
-          - Sync toolchains: ${{ inputs.mirror_toolchains && '✅ Yes' || '❌ No' }}
-          
-          **SUSFS Configuration:**
-          EOF
+            echo "- Optimization: \`${{ inputs.optimize_level }}\`"
+            echo "- Clean Build/No Ccache: ${{ inputs.clean_build && '✅ Yes' || '❌ No' }}"
+            echo "- Create Release: ${{ inputs.make_release && '✅ Yes' || '❌ No' }}"
+            echo "- Create Debug Artifacts: ${{ inputs.debug && '✅ Yes' || '❌ No' }}"
+            echo "- Sync toolchains: ${{ inputs.mirror_toolchains && '✅ Yes' || '❌ No' }}"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 📦 Selected Build Matrix"
+            echo ""
+            echo "<details>"
+            echo "<summary><strong>Show selected build matrix: $BUILD_TARGET_COUNT targets</strong></summary>"
+            echo ""
+            echo "| # | Model | OOS | Android / Kernel | KSU Variant | KSU Ref | KSU Commit |"
+            echo "|---:|-------|-----|------------------|-------------|---------|------------|"
           } >> "$GITHUB_STEP_SUMMARY"
-          
-          # Display SUSFS config for each kernel version
+
+          jq -r '
+            def ksu_label:
+              if . == "KSUN" then "KernelSU Next"
+              elif . == "KSU" then "KernelSU"
+              elif . == "RSKSU" then "ReSukiSU"
+              elif . == "SUKISU" then "SukiSU Ultra"
+              else .
+              end;
+
+            .include
+            | to_entries[]
+            | "| \(.key + 1) | `\(.value.model)` | `\(.value.os_version)` | `\(.value.android_version)-\(.value.kernel_version)` | `\(.value.ksu_type | ksu_label)` | `\(.value.ksu_hash)` | `\(.value.ksu_resolved_hash)` |"
+          ' <<< "$matrix_json" >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo ""
+            echo "</details>"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 🧩 SUSFS Configuration"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
           declare -A susfs_inputs=(
             ["android12-5.10"]="${{ inputs.android12-5_10_susfs_branch_or_commit }}"
             ["android13-5.15"]="${{ inputs.android13-5_15_susfs_branch_or_commit }}"
@@ -492,42 +571,58 @@ jobs:
             ["android15-6.6"]="${{ inputs.android15-6_6_susfs_branch_or_commit }}"
             ["android16-6.12"]="${{ inputs.android16-6_12_susfs_branch_or_commit }}"
           )
-          
+
           declare -A step_hashes=(
-            ["android12-5.10"]="${{ steps.set-matrix.outputs.susfs_hash_android12_5_10 }}"
-            ["android13-5.15"]="${{ steps.set-matrix.outputs.susfs_hash_android13_5_15 }}"
-            ["android14-6.1"]="${{ steps.set-matrix.outputs.susfs_hash_android14_6_1 }}"
-            ["android15-6.6"]="${{ steps.set-matrix.outputs.susfs_hash_android15_6_6 }}"
-            ["android16-6.12"]="${{ steps.set-matrix.outputs.susfs_hash_android16_6_12 }}"
+            ["android12-5.10"]="$SUSFS_HASH_ANDROID12_5_10"
+            ["android13-5.15"]="$SUSFS_HASH_ANDROID13_5_15"
+            ["android14-6.1"]="$SUSFS_HASH_ANDROID14_6_1"
+            ["android15-6.6"]="$SUSFS_HASH_ANDROID15_6_6"
+            ["android16-6.12"]="$SUSFS_HASH_ANDROID16_6_12"
           )
-          
-          # Iterate only on the GKI versions present in this run
-          IFS=',' read -ra active_keys_display \
-            <<< "${{ steps.set-matrix.outputs.active_gki_keys }}"
-          
-          for key in "${active_keys_display[@]}"; do
-            value="${susfs_inputs[$key]:-}"
-            fetched_hash="${step_hashes[$key]:-unknown}"
-            
-            if [ -z "$value" ]; then
-              # Auto: no input > hash resolved by ls-remote
-              echo "- $key: 🔄 auto (\`$fetched_hash\`)" >> $GITHUB_STEP_SUMMARY
-            elif [[ "$value" =~ ^[0-9a-f]{40}$ ]]; then
-              # Manual 40-char hash > direct passthrough
-              echo "- $key: 📌 \`$value\`" >> $GITHUB_STEP_SUMMARY
-            else
-              # Branch name > show branch + resolved hash
-              echo "- $key: 🔀 \`$value\` (\`$fetched_hash\`)" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "> **💡 Note:** Hashes are resolved at run time via API calls before builds start." >> $GITHUB_STEP_SUMMARY
-          
-          # Add OOS restriction note for android-kernel filters
+
+          IFS=',' read -ra active_keys_display <<< "$ACTIVE_GKI_KEYS"
+
+          if [ "${#active_keys_display[@]}" -eq 0 ] || [ -z "${active_keys_display[0]:-}" ]; then
+            echo "- No SUSFS-enabled targets selected." >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "| Android / Kernel | SUSFS Ref |"
+              echo "|------------------|-----------|"
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            for key in "${active_keys_display[@]}"; do
+              [ -n "$key" ] || continue
+
+              value="${susfs_inputs[$key]:-}"
+              fetched_hash="${step_hashes[$key]:-unknown}"
+
+              if [ -z "$value" ]; then
+                echo "| \`$key\` | 🔄 auto (\`$fetched_hash\`) |" >> "$GITHUB_STEP_SUMMARY"
+              elif [[ "$value" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "| \`$key\` | 📌 \`$value\` |" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "| \`$key\` | 🔀 \`$value\` (\`$fetched_hash\`) |" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            done
+          fi
+
+          {
+            echo ""
+            echo "> **💡 Note:** Hashes are resolved at run time via API calls before builds start."
+          } >> "$GITHUB_STEP_SUMMARY"
+
           if [[ "${{ inputs.op_model }}" == android*-*.* ]]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "> **⚠️ Android-Kernel Filter:** Only OOS15 and OOS16 devices will be built for \`${{ inputs.op_model }}\`" >> $GITHUB_STEP_SUMMARY
+            {
+              echo ""
+              echo "> **⚠️ Android-Kernel Filter:** Only OOS15 and OOS16 devices will be built for \`${{ inputs.op_model }}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "${{ inputs.target_model }}" != "" ]; then
+            {
+              echo ""
+              echo "> **🎯 Target Model Filter:** Only exact model \`${{ inputs.target_model }}\` is included."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
   mirror_toolchain:
