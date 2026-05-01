@@ -1073,7 +1073,7 @@ runs:
         KSU_COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
         COMMITS_COUNT="$(git rev-list --count HEAD 2>/dev/null || echo 30000)"
 
-        KSU_VERSION=$((COMMITS_COUNT + 10606))
+        KSU_VERSION=$((COMMITS_COUNT + 37185))
 
         echo "Detected SukiSU commits: $COMMITS_COUNT"
         echo "Calculated SukiSU Ultra version: $KSU_VERSION"
@@ -1094,7 +1094,7 @@ runs:
 
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_KSU=y
-        CONFIG_KPM=y
+        CONFIG_KPM=n
         EOF
 
         echo "SUKISU" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
