@@ -1002,19 +1002,16 @@ runs:
         echo "::group::Add ReSukiSU"
 
         cd "$KERNEL_PLATFORM_FOLDER"
-
         echo "Adding ReSukiSU..."
 
         KSU_INPUT="${{ inputs.ksu_branch_or_hash }}"
 
         if [ -z "$KSU_INPUT" ]; then
           echo "No ReSukiSU branch/hash provided. Using installer default."
-
           curl --fail --location --proto '=https' -LSs \
             "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -
         else
           echo "Using ReSukiSU branch/hash: $KSU_INPUT"
-
           curl --fail --location --proto '=https' -LSs \
             "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s "$KSU_INPUT"
         fi
@@ -1047,9 +1044,82 @@ runs:
 
         echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
 
+        # === Prevent ReSukiSU -dirty suffix from version generators ===
+        echo "🛡️ Patching ReSukiSU Makefiles/Kbuild files to disable --dirty detection"
+
+        DIRTY_HITS=0
+
+        while IFS= read -r -d '' version_file; do
+          if grep -q -- "--dirty" "$version_file" 2>/dev/null; then
+            sed -i \
+              -e 's/[[:space:]]--dirty=[^[:space:]"'\'')]*//g' \
+              -e 's/[[:space:]]--dirty//g' \
+              -e 's/--dirty=[^[:space:]"'\'')]*//g' \
+              -e 's/--dirty//g' \
+              "$version_file"
+
+            echo "   ✅ Patched: ${version_file#$KERNEL_PLATFORM_FOLDER/KernelSU/}"
+            DIRTY_HITS=$((DIRTY_HITS + 1))
+          fi
+        done < <(find "$KERNEL_PLATFORM_FOLDER/KernelSU" \( -name "Makefile" -o -name "Kbuild" \) -print0)
+
+        if [ "$DIRTY_HITS" -eq 0 ]; then
+          echo "ℹ️ No --dirty detection found in ReSukiSU Makefiles/Kbuild files"
+        else
+          echo "✅ Patched $DIRTY_HITS file(s) — --dirty detection disabled"
+        fi
+
+        # === Eliminate ReSukiSU -dirty suffix by making the Git tree clean ===
+        echo "🧹 Cleaning ReSukiSU repository to remove -dirty"
+
+        git config --global user.name "github-actions"
+        git config --global user.email "github-actions@github.com"
+
         cd "$KERNEL_PLATFORM_FOLDER/KernelSU"
 
-        KSU_COMMIT_SHA=$(git rev-parse HEAD)
+        if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          CHANGES_BEFORE="$(git status --porcelain | wc -l | tr -d ' ')"
+          echo "ℹ️ Detected ${CHANGES_BEFORE} uncommitted changes in ReSukiSU"
+
+          if [ "$CHANGES_BEFORE" -gt 0 ]; then
+            git add -A
+
+            if git diff --cached --quiet; then
+              echo "ℹ️ No staged changes after git add -A"
+            else
+              git commit -m "workflow: apply ReSukiSU build adjustments" --no-verify --quiet || true
+              echo "✅ ReSukiSU repository committed"
+            fi
+          else
+            echo "✅ ReSukiSU already clean"
+          fi
+
+          CHANGES_AFTER="$(git status --porcelain | wc -l | tr -d ' ')"
+
+          if [ "$CHANGES_AFTER" -eq 0 ]; then
+            echo "✅ git status confirms: ReSukiSU tree is clean"
+          else
+            echo "⚠️ Warning: ReSukiSU tree is still dirty"
+            git status --short || true
+          fi
+
+          if git describe --dirty >/tmp/resukisu_describe.txt 2>/dev/null; then
+            RESUKISU_DESCRIBE="$(cat /tmp/resukisu_describe.txt)"
+
+            if echo "$RESUKISU_DESCRIBE" | grep -q "dirty"; then
+              echo "⚠️ git describe still reports dirty: $RESUKISU_DESCRIBE"
+            else
+              echo "✅ git describe confirms clean version: $RESUKISU_DESCRIBE"
+            fi
+          else
+            echo "ℹ️ git describe unavailable, using git status as source of truth"
+          fi
+
+          KSU_COMMIT_SHA="$(git rev-parse HEAD)"
+        else
+          echo "ℹ️ Not inside a Git work tree for ReSukiSU"
+          KSU_COMMIT_SHA="${KSU_COMMIT_SHA:-unknown}"
+        fi
 
         echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA" >> "$GITHUB_ENV"
         echo "KSUVER=$KSU_VERSION" >> "$GITHUB_ENV"
@@ -1066,7 +1136,12 @@ runs:
         echo "$KSU_VERSION" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
 
         echo "ReSukiSU Version: $KSU_VERSION"
-        echo "✅ ReSukiSU added commit: ${KSU_COMMIT_SHA:0:8}"
+
+        if [ "$KSU_COMMIT_SHA" != "unknown" ]; then
+          echo "✅ ReSukiSU added commit: ${KSU_COMMIT_SHA:0:8}"
+        else
+          echo "✅ ReSukiSU added commit: unknown"
+        fi
 
         echo "::endgroup::"
 
