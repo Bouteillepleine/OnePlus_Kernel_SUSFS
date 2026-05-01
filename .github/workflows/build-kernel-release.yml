@@ -1050,15 +1050,19 @@ jobs:
       - set-op-model
       - build
     runs-on: ubuntu-latest
-    if: ${{ inputs.make_release }}
+   
+    if: ${{ always() && inputs.make_release && needs.set-op-model.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'failure') }}
 
     env:
       REPO_OWNER: ${{ github.repository_owner }}
       REPO_NAME: ${{ github.event.repository.name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       SUSFS_BASE_VERSION: ${{ needs.set-op-model.outputs.susfs_base_version }}
       TARGET_GROUP: ${{ inputs.op_model }}
       TARGET_MODEL_DISPLAY: ${{ needs.set-op-model.outputs.target_model_display }}
+      KSU_OPTIONS_RESOLVED: ${{ needs.set-op-model.outputs.ksu_options_resolved }}
+
       RELEASE_NAME: 'OnePlus KernelSU Variants & SUSFS ${{ needs.set-op-model.outputs.susfs_base_version }}'
 
     steps:
@@ -1067,18 +1071,47 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: 🔎 Debug release prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "make_release:             ${{ inputs.make_release }}"
+          echo "set-op-model result:      ${{ needs.set-op-model.result }}"
+          echo "build result:             ${{ needs.build.result }}"
+          echo "Target group:             $TARGET_GROUP"
+          echo "Target model filter:      $TARGET_MODEL_DISPLAY"
+          echo "SUSFS_BASE_VERSION:       $SUSFS_BASE_VERSION"
+          echo "KSU_OPTIONS_RESOLVED:     $KSU_OPTIONS_RESOLVED"
+
+          if [ -z "$SUSFS_BASE_VERSION" ] || [ "$SUSFS_BASE_VERSION" = "unknown" ]; then
+            echo "::error::SUSFS_BASE_VERSION is empty or unknown. Cannot create release."
+            exit 1
+          fi
+
+          if [ -z "$KSU_OPTIONS_RESOLVED" ] || [ "$KSU_OPTIONS_RESOLVED" = "[]" ]; then
+            echo "::error::KSU_OPTIONS_RESOLVED is empty. Cannot create release."
+            exit 1
+          fi
+
       - name: 🏷️ Generate and Create New Tag
         shell: bash
         run: |
           set -euo pipefail
 
-          LATEST_MATCHING_TAG=$(gh api "repos/$REPO_OWNER/$REPO_NAME/tags" \
-            --jq "[.[] | select(.name | startswith(\"${SUSFS_BASE_VERSION}-r\"))] | sort_by(.name | split(\"-r\")[1] | tonumber) | last | .name // empty")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch --tags origin
+
+          LATEST_MATCHING_TAG="$(git tag -l "${SUSFS_BASE_VERSION}-r*" | sort -V | tail -n1 || true)"
 
           if [ -z "$LATEST_MATCHING_TAG" ]; then
             NEW_TAG="${SUSFS_BASE_VERSION}-r1"
           else
-            NEW_TAG=$(echo "$LATEST_MATCHING_TAG" | awk -F'-r' '{printf "%s-r%d", $1, $2 + 1}')
+            CURRENT_NUMBER="$(echo "$LATEST_MATCHING_TAG" | awk -F'-r' '{print $2}')"
+            NEXT_NUMBER="$((CURRENT_NUMBER + 1))"
+            NEW_TAG="${SUSFS_BASE_VERSION}-r${NEXT_NUMBER}"
           fi
 
           echo "New tag: $NEW_TAG"
@@ -1094,6 +1127,32 @@ jobs:
           merge-multiple: true
           skip-decompress: true
 
+      - name: 🔎 Debug downloaded artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Downloaded artifact tree:"
+          find ./downloaded-artifacts -maxdepth 5 -type f -print | sort || true
+
+          echo ""
+          echo "ZIP files found:"
+          find ./downloaded-artifacts -type f -name "*.zip" -print | sort || true
+
+          echo ""
+          echo "matrix.json files found:"
+          find ./downloaded-artifacts -type f -name "matrix.json" -print | sort || true
+
+          ZIP_COUNT="$(find ./downloaded-artifacts -type f -name "*.zip" | wc -l | tr -d ' ')"
+
+          echo ""
+          echo "ZIP count: $ZIP_COUNT"
+
+          if [ "$ZIP_COUNT" -eq 0 ]; then
+            echo "::error::No kernel ZIP artifacts found."
+            exit 1
+          fi
+
       - name: 📝 Generate Device List and Final Release Notes
         id: generate-notes
         shell: bash
@@ -1102,11 +1161,35 @@ jobs:
 
           echo "=== Start building the release notes ==="
 
-          JSON_BUILD_DATA=$(jq -c '.' ./downloaded-artifacts/matrix.json)
+          MATRIX_FILE="$(find ./downloaded-artifacts -type f -name "matrix.json" | head -n1 || true)"
 
-          ksu_type="${{ fromJSON(needs.set-op-model.outputs.ksu_options_resolved)[0].type }}"
-          ksu_ref="${{ fromJSON(needs.set-op-model.outputs.ksu_options_resolved)[0].hash }}"
-          ksu_resolved_hash="${{ fromJSON(needs.set-op-model.outputs.ksu_options_resolved)[0].resolved_hash }}"
+          if [ -n "$MATRIX_FILE" ] && [ -f "$MATRIX_FILE" ]; then
+            echo "Using matrix file: $MATRIX_FILE"
+            RAW_MATRIX="$(cat "$MATRIX_FILE")"
+          else
+            echo "matrix.json artifact not found. Falling back to set-op-model output."
+            RAW_MATRIX='${{ needs.set-op-model.outputs.matrix }}'
+          fi
+
+          JSON_BUILD_DATA="$(jq -c '
+            if type == "object" and has("include") then
+              .include
+            elif type == "array" then
+              .
+            else
+              error("Unsupported matrix JSON shape")
+            end
+          ' <<< "$RAW_MATRIX")"
+
+          MATRIX_COUNT="$(jq 'length' <<< "$JSON_BUILD_DATA")"
+          ZIP_COUNT="$(find ./downloaded-artifacts -type f -name "*.zip" | wc -l | tr -d ' ')"
+
+          echo "Matrix targets loaded: $MATRIX_COUNT"
+          echo "ZIP artifacts found:   $ZIP_COUNT"
+
+          ksu_type="$(jq -r '.[0].type // "unknown"' <<< "$KSU_OPTIONS_RESOLVED")"
+          ksu_ref="$(jq -r '.[0].hash // "unknown"' <<< "$KSU_OPTIONS_RESOLVED")"
+          ksu_resolved_hash="$(jq -r '.[0].resolved_hash // "unknown"' <<< "$KSU_OPTIONS_RESOLVED")"
 
           OPTIMIZE_LEVEL="${{ inputs.optimize_level }}"
           CLEAN_BUILD="${{ inputs.clean_build }}"
@@ -1147,17 +1230,17 @@ jobs:
 
           declare -A device_info
 
-          for file in $(find downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | sort); do
-            zipname=$(basename "$file" .zip)
+          while IFS= read -r file; do
+            zipname="$(basename "$file" .zip)"
             rest="${zipname#AK3_}"
 
             IFS='_' read -ra parts <<< "$rest"
 
-            model="${parts[0]}"
-            os_version="${parts[1]}"
-            kernel_version="${parts[2]}"
-            zip_ksu_type="${parts[3]}"
-            ksu_ver="${parts[4]}"
+            model="${parts[0]:-unknown}"
+            os_version="${parts[1]:-unknown}"
+            kernel_version="${parts[2]:-unknown}"
+            zip_ksu_type="${parts[3]:-unknown}"
+            ksu_ver="${parts[4]:-unknown}"
 
             if [ "${parts[5]:-}" = "SuSFS" ]; then
               susfs_ver="${parts[6]:-unknown}"
@@ -1167,14 +1250,14 @@ jobs:
 
             full_model="${model}_${os_version}_${zip_ksu_type}"
             device_info["$full_model"]="$model|$os_version|$kernel_version|$zip_ksu_type|$ksu_ver|$susfs_ver"
-          done
+          done < <(find ./downloaded-artifacts -type f -name "*.zip" | sort)
 
           if [ "${#device_info[@]}" -eq 0 ]; then
             echo "::error::No kernel zip artifacts found."
             exit 1
           fi
 
-          first_entry=$(printf '%s\n' "${!device_info[@]}" | sort | head -n1)
+          first_entry="$(printf '%s\n' "${!device_info[@]}" | sort | head -n1)"
           IFS='|' read -r _ _ _ _ ksu_ver_global _ <<< "${device_info[$first_entry]}"
 
           declare -A susfs_map=(
@@ -1187,14 +1270,33 @@ jobs:
 
           IFS=',' read -ra active_gki_keys <<< "${{ needs.set-op-model.outputs.active_gki_keys }}"
 
-          ksu_display=$(ksu_display_value "$ksu_ref" "$ksu_resolved_hash")
+          ksu_display="$(ksu_display_value "$ksu_ref" "$ksu_resolved_hash")"
 
-          cat << EOF > release_notes.md
-          # 🎯 OnePlus Kernels with KernelSU Variants & SUSFS $SUSFS_BASE_VERSION
+          cat > release_notes.md << EOF
+          # 🎯 OnePlus Kernels with $ksu_name & SUSFS $SUSFS_BASE_VERSION
 
           > **Build Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')  
           > **Build ID:** \`${{ github.run_id }}\`  
           > **Workflow:** [\`${{ github.workflow }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          ---
+
+          ## 🔧 Build Configuration
+
+          | Component | Version/Setting |
+          |-----------|-----------------|
+          | **Target Group** | \`$TARGET_GROUP\` |
+          | **Target Model Filter** | \`$TARGET_MODEL_DISPLAY\` |
+          | **Matrix Targets** | \`$MATRIX_COUNT\` |
+          | **Release ZIP Assets** | \`$ZIP_COUNT\` |
+          | **Root Variant** | \`$ksu_name\` |
+          | **Root Repository** | \`$ksu_repo\` |
+          | **Root Ref** | \`$ksu_display\` |
+          | **Root Version** | \`$ksu_ver_global\` |
+          | **Root Commit** | \`$ksu_resolved_hash\` |
+          | **SUSFS Version** | \`$SUSFS_BASE_VERSION\` |
+          | **Optimization Level** | \`$OPTIMIZE_LEVEL\` |
+          | **Clean Build** | \`$CLEAN_BUILD\` |
 
           ---
 
@@ -1207,11 +1309,11 @@ jobs:
           for full_key in $(printf '%s\n' "${!device_info[@]}" | sort); do
             IFS='|' read -r model os_ver kernel_ver zip_ksu_type _ _ <<< "${device_info[$full_key]}"
 
-            feature_flags=$(jq -r --arg MODEL "$model" --arg OS "$os_ver" '
+            feature_flags="$(jq -r --arg MODEL "$model" --arg OS "$os_ver" '
               .[]
               | select(.model == $MODEL and .os_version == $OS)
               | "\(.hmbird // false)\t\(.susfs // false)\t\(.bbr // false)\t\(.bbg // false)\t\(.ttl // false)\t\(.ip_set // false)\t\(.unicode // false)\t\(.ds // false)\t\(.ntsync // false)"
-            ' <<< "$JSON_BUILD_DATA" | head -n1)
+            ' <<< "$JSON_BUILD_DATA" | head -n1)"
 
             features=()
 
@@ -1233,7 +1335,7 @@ jobs:
               if [ "${#features[@]}" -eq 0 ]; then
                 features_str="N/A"
               else
-                features_str=$(IFS=', '; echo "${features[*]}")
+                features_str="$(IFS=', '; echo "${features[*]}")"
               fi
             fi
 
@@ -1252,29 +1354,14 @@ jobs:
                 ;;
             esac
 
-            echo "| $model | $os_ver | $kernel_ver | $zip_ksu_label | $features_str |" >> release_notes.md
+            echo "| \`$model\` | \`$os_ver\` | \`$kernel_ver\` | \`$zip_ksu_label\` | $features_str |" >> release_notes.md
           done
 
-          cat << EOF >> release_notes.md
+          cat >> release_notes.md << EOF
 
           ---
 
-          ## 🔧 Build Configuration
-
-          | Component | Version/Setting |
-          |-----------|-----------------|
-          | **Target Group** | \`$TARGET_GROUP\` |
-          | **Target Model Filter** | \`$TARGET_MODEL_DISPLAY\` |
-          | **Root Variant** | \`$ksu_name\` |
-          | **Root Repository** | \`$ksu_repo\` |
-          | **Root Ref** | \`$ksu_display\` |
-          | **Root Version** | \`$ksu_ver_global\` |
-          | **SUSFS Version** | \`$SUSFS_BASE_VERSION\` |
-          | **Optimization Level** | \`$OPTIMIZE_LEVEL\` |
-          | **Clean Build** | $( [ "$CLEAN_BUILD" = "true" ] && echo "✅ Yes (no ccache)" || echo "❌ No (ccache enabled)" ) |
-          | **Compiler** | Clang (version varies by device) |
-
-          ### 📌 SUSFS Branch Mapping
+          ## 📌 SUSFS Branch Mapping
 
           | Kernel Version | SUSFS Commit |
           |----------------|--------------|
@@ -1282,10 +1369,24 @@ jobs:
 
           for key in "${active_gki_keys[@]}"; do
             [ -n "$key" ] || continue
-            echo "| $key | \`${susfs_map[$key]:-unknown}\` |" >> release_notes.md
+            echo "| \`$key\` | \`${susfs_map[$key]:-unknown}\` |" >> release_notes.md
           done
 
-          cat << EOF >> release_notes.md
+          cat >> release_notes.md << EOF
+
+          ---
+
+          ## 📥 Release Assets
+
+          | Artifact |
+          |----------|
+          EOF
+
+          while IFS= read -r file; do
+            echo "| \`$(basename "$file")\` |" >> release_notes.md
+          done < <(find ./downloaded-artifacts -type f -name "*.zip" | sort)
+
+          cat >> release_notes.md << EOF
 
           ---
 
@@ -1364,7 +1465,7 @@ jobs:
 
           ### Via Kernel Flasher
 
-          1. Download the correct AnyKernel3 ZIP for your device.
+          1. Download the correct AnyKernel3 ZIP for your exact device and OS version.
           2. If you previously used another root method, clean it up first:
              - **Magisk:** perform a complete uninstall after flashing the AnyKernel3 ZIP.
              - **KSU LKM:** flash back stock boot/init_boot/vendor_boot depending on what you patched.
@@ -1393,13 +1494,28 @@ jobs:
 
           ---
 
+          ## ⚠️ Flashing Notice
+
+          Flash only the ZIP intended for your exact device model and OS version.
+
+          Before flashing:
+
+          - Back up your stock boot-related partitions.
+          - Confirm your exact model.
+          - Confirm your OS version.
+          - Keep a recovery path available.
+
+          You flash at your own risk.
+
+          ---
+
           ## 🙏 Credits
 
           - **KernelSU Next Team**
           - **KernelSU Team**
           - **ReSukiSU Team**
           - **simonpunk** - SUSFS development
-          - **OnePlus** - Kernel source code
+          - **OnePlus / Oppo / Realme** - Kernel source code
           - **Community Contributors**
 
           ---
@@ -1421,17 +1537,15 @@ jobs:
             --notes-file release_notes.md \
             --draft
 
-      - name: 📤 Upload Release Assets Dynamically
+      - name: 📤 Upload Release Assets
         shell: bash
         run: |
           set -euo pipefail
 
-          for file in ./downloaded-artifacts/*.zip; do
-            if [ -f "$file" ]; then
-              echo "Uploading $file..."
-              gh release upload "${{ env.NEW_TAG }}" "$file" --clobber
-            fi
-          done
+          while IFS= read -r file; do
+            echo "Uploading $file..."
+            gh release upload "${{ env.NEW_TAG }}" "$file" --clobber
+          done < <(find ./downloaded-artifacts -type f -name "*.zip" | sort)
 
       - name: 📊 Release summary
         if: success()
@@ -1439,25 +1553,22 @@ jobs:
         run: |
           set -euo pipefail
 
+          ZIP_COUNT="$(find ./downloaded-artifacts -type f -name "*.zip" | wc -l | tr -d ' ')"
+
           {
-            echo ""
-            echo "---"
-            echo ""
             echo "## 🎉 Release Created Successfully"
             echo ""
             echo "**Tag:** [\`${{ env.NEW_TAG }}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})"
             echo "**Target Group:** \`${{ env.TARGET_GROUP }}\`"
             echo "**Target Model Filter:** \`${{ env.TARGET_MODEL_DISPLAY }}\`"
-            echo "**Kernels:** $(find ./downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | wc -l)"
+            echo "**Assets Uploaded:** \`$ZIP_COUNT\`"
             echo ""
-            echo "### 📦 Assets"
+            echo "### 📦 Uploaded ZIPs"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          for zip in ./downloaded-artifacts/*.zip; do
-            if [ -f "$zip" ]; then
-              name=$(basename "$zip")
-              size=$(stat -c%s "$zip")
-              size_mb=$(echo "scale=2; $size / 1024 / 1024" | bc)
-              echo "- \`$name\` (${size_mb} MB)" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          done
+          while IFS= read -r zip; do
+            name="$(basename "$zip")"
+            size="$(stat -c%s "$zip")"
+            size_mb="$(echo "scale=2; $size / 1024 / 1024" | bc)"
+            echo "- \`$name\` (${size_mb} MB)" >> "$GITHUB_STEP_SUMMARY"
+          done < <(find ./downloaded-artifacts -type f -name "*.zip" | sort)
