@@ -1955,152 +1955,99 @@ runs:
       run: |
         set -euo pipefail
     
-        echo "::group::Download SUSFS Module from CI"
+        echo "::group::Download Latest SUSFS Module from CI"
     
         REPO="sidex15/susfs4ksu-module"
         BRANCH="v1.5.2+"
-    
-        OUTER_ZIP="/tmp/susfs_module_artifact.zip"
-        EXTRACT_DIR="/tmp/susfs_module_artifact"
-    
         MODULE_NAME="ksu_module_susfs_1.5.2+_CI.zip"
-        RELEASE_MODULE_NAME="ksu_module_susfs_1.5.2+_Release.zip"
-    
-        echo "AK3_FOLDER=${AK3_FOLDER:-unset}"
     
         if [ -z "${AK3_FOLDER:-}" ]; then
-          echo "::warning::AK3_FOLDER is not set, cannot copy SUSFS module"
+          echo "::warning::AK3_FOLDER is not set"
           echo "::endgroup::"
           exit 0
         fi
     
         mkdir -p "$AK3_FOLDER"
     
-        echo "📦 Downloading latest SUSFS module"
-        echo "🔍 Looking for successful CI runs from branch: $BRANCH"
+        MODULE_PATH="$AK3_FOLDER/$MODULE_NAME"
     
-        RUNS_JSON="/tmp/susfs_runs.json"
-    
-        if curl -fsSL \
-          -H "Authorization: Bearer ${GH_TOKEN}" \
-          -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/${REPO}/actions/runs?status=success&per_page=50" \
-          -o "$RUNS_JSON"; then
-    
-          echo "Available successful runs:"
-          jq -r '
-            .workflow_runs[]
-            | "\(.id) | branch=\(.head_branch // "null") | event=\(.event) | name=\(.name) | conclusion=\(.conclusion)"
-          ' "$RUNS_JSON" || true
-    
-          LATEST_RUN_ID="$(
-            jq -r --arg branch "$BRANCH" '
-              .workflow_runs[]
-              | select(.head_branch == $branch)
-              | .id
-            ' "$RUNS_JSON" |
-            head -n 1
-          )"
-        else
-          echo "⚠️ Failed to query workflow runs"
-          LATEST_RUN_ID=""
-        fi
-    
-        MODULE_ZIP=""
-    
-        if [ -n "$LATEST_RUN_ID" ] && [ "$LATEST_RUN_ID" != "null" ]; then
-          echo "✅ Latest successful run ID: $LATEST_RUN_ID"
-    
-          ARTIFACTS_JSON="/tmp/susfs_artifacts.json"
-    
-          if curl -fsSL \
+        LATEST_RUN_ID="$(
+          curl -fsSL \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${REPO}/actions/runs/${LATEST_RUN_ID}/artifacts" \
-            -o "$ARTIFACTS_JSON"; then
+            "https://api.github.com/repos/${REPO}/actions/runs?status=success&per_page=50" |
+          jq -r --arg branch "$BRANCH" '
+            .workflow_runs[]
+            | select(.head_branch == $branch)
+            | .id
+          ' |
+          head -n 1
+        )"
     
-            echo "Available artifacts:"
-            jq -r '
-              .artifacts[]
-              | "\(.id) | name=\(.name) | expired=\(.expired) | size=\(.size_in_bytes)"
-            ' "$ARTIFACTS_JSON" || true
-    
-            ARTIFACT_URL="$(
-              jq -r '
-                .artifacts[]
-                | select(.expired == false)
-                | .archive_download_url
-              ' "$ARTIFACTS_JSON" |
-              head -n 1
-            )"
-    
-            if [ -n "$ARTIFACT_URL" ] && [ "$ARTIFACT_URL" != "null" ]; then
-              echo "📥 Downloading artifact archive"
-    
-              if curl -fL \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
-                -o "$OUTER_ZIP" \
-                "$ARTIFACT_URL"; then
-    
-                rm -rf "$EXTRACT_DIR"
-                mkdir -p "$EXTRACT_DIR"
-    
-                unzip -q "$OUTER_ZIP" -d "$EXTRACT_DIR"
-    
-                echo "Artifact contents:"
-                find "$EXTRACT_DIR" -maxdepth 5 -type f -print -exec ls -lh {} \;
-    
-                MODULE_ZIP="$(
-                  find "$EXTRACT_DIR" -type f -name '*.zip' |
-                  head -n 1 || true
-                )"
-              else
-                echo "⚠️ Failed to download artifact archive"
-              fi
-            else
-              echo "⚠️ No downloadable non-expired artifact found"
-            fi
-          else
-            echo "⚠️ Failed to query artifacts for run $LATEST_RUN_ID"
-          fi
-        else
-          echo "⚠️ No successful CI run found for branch $BRANCH"
+        if [ -z "$LATEST_RUN_ID" ] || [ "$LATEST_RUN_ID" = "null" ]; then
+          echo "::warning::No successful run found for branch $BRANCH"
+          echo "::endgroup::"
+          exit 0
         fi
     
-        if [ -n "$MODULE_ZIP" ] && [ -f "$MODULE_ZIP" ]; then
-          echo "✅ Found module from CI: $MODULE_ZIP"
+        echo "✅ Found run ID: $LATEST_RUN_ID"
     
-          cp -f "$MODULE_ZIP" "$AK3_FOLDER/$MODULE_NAME"
+        ARTIFACT_URL="$(
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/actions/runs/${LATEST_RUN_ID}/artifacts" |
+          jq -r '
+            .artifacts[]
+            | select(.expired == false)
+            | .archive_download_url
+          ' |
+          head -n 1
+        )"
     
-          echo "✅ SUSFS module copied to AK3:"
-          echo "   $AK3_FOLDER/$MODULE_NAME"
-        else
-          echo "⚠️ CI artifact module ZIP not found"
-          echo "   Trying release fallback..."
-    
-          RELEASE_URL="https://github.com/sidex15/ksu_module_susfs/releases/download/v1.5.2%2B/ksu_module_susfs_1.5.2%2B.zip"
-          RELEASE_ZIP="/tmp/$RELEASE_MODULE_NAME"
-    
-          echo "📥 Downloading from release:"
-          echo "   $RELEASE_URL"
-    
-          if curl -Lf -o "$RELEASE_ZIP" "$RELEASE_URL"; then
-            echo "✅ Downloaded release module:"
-            ls -lh "$RELEASE_ZIP"
-    
-            cp -f "$RELEASE_ZIP" "$AK3_FOLDER/$RELEASE_MODULE_NAME"
-    
-            echo "✅ Release SUSFS module copied to AK3:"
-            echo "   $AK3_FOLDER/$RELEASE_MODULE_NAME"
-          else
-            echo "::warning::Failed to download SUSFS module from CI and release fallback"
-          fi
+        if [ -z "$ARTIFACT_URL" ] || [ "$ARTIFACT_URL" = "null" ]; then
+          echo "::warning::Failed to fetch artifact URL"
+          echo "::endgroup::"
+          exit 0
         fi
     
-        echo ""
-        echo "AK3 contents after SUSFS module step:"
-        find "$AK3_FOLDER" -maxdepth 2 -type f -print -exec ls -lh {} \;
+        echo "📥 Downloading artifact archive as module ZIP"
+        echo "   $ARTIFACT_URL"
+    
+        if curl -fL \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -o "$MODULE_PATH" \
+          "$ARTIFACT_URL"; then
+    
+          echo "✅ Downloaded:"
+          ls -lh "$MODULE_PATH"
+    
+          FILE_SIZE="$(stat -c%s "$MODULE_PATH" 2>/dev/null || echo 0)"
+    
+          if [ "$FILE_SIZE" -lt 1000 ]; then
+            echo "::warning::Downloaded module ZIP is too small: ${FILE_SIZE} bytes"
+            rm -f "$MODULE_PATH"
+            echo "::endgroup::"
+            exit 0
+          fi
+    
+          if unzip -l "$MODULE_PATH" | grep -q 'module.prop'; then
+            echo "✅ Valid SUSFS module ZIP: module.prop found"
+            echo "MODULE_DOWNLOADED=true" >> "$GITHUB_ENV"
+            echo "MODULE_SOURCE=CI" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Downloaded ZIP does not contain module.prop"
+            echo "ZIP listing:"
+            unzip -l "$MODULE_PATH" | head -n 80 || true
+          fi
+    
+        else
+          echo "::warning::Failed to download artifact"
+        fi
+    
+        echo "AK3 contents after module download:"
+        find "$AK3_FOLDER" -maxdepth 1 -type f -print -exec ls -lh {} \;
     
         echo "::endgroup::"
 
