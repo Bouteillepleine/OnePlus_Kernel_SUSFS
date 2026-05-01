@@ -1864,6 +1864,111 @@ runs:
         echo "   - Build time: ${BUILD_TIME}s"
         echo "::endgroup::"
 
+    - name: Download Latest SUSFS Module from CI
+      if: ${{ env.OP_SUSFS == 'true' }}
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+    
+        echo "::group::Download Latest SUSFS Module from CI"
+    
+        REPO="sidex15/susfs4ksu-module"
+        BRANCH="v1.5.2+"
+        MODULE_NAME="ksu_module_susfs_1.5.2+_CI.zip"
+    
+        if [ -z "${AK3_FOLDER:-}" ]; then
+          echo "::warning::AK3_FOLDER is not set"
+          echo "::endgroup::"
+          exit 0
+        fi
+    
+        mkdir -p "$AK3_FOLDER"
+    
+        MODULE_PATH="$AK3_FOLDER/$MODULE_NAME"
+    
+        LATEST_RUN_ID="$(
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/actions/runs?status=success&per_page=50" |
+          jq -r --arg branch "$BRANCH" '
+            .workflow_runs[]
+            | select(.head_branch == $branch)
+            | .id
+          ' |
+          head -n 1
+        )"
+    
+        if [ -z "$LATEST_RUN_ID" ] || [ "$LATEST_RUN_ID" = "null" ]; then
+          echo "::warning::No successful run found for branch $BRANCH"
+          echo "::endgroup::"
+          exit 0
+        fi
+    
+        echo "✅ Found run ID: $LATEST_RUN_ID"
+    
+        ARTIFACT_URL="$(
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${REPO}/actions/runs/${LATEST_RUN_ID}/artifacts" |
+          jq -r '
+            .artifacts[]
+            | select(.expired == false)
+            | .archive_download_url
+          ' |
+          head -n 1
+        )"
+    
+        if [ -z "$ARTIFACT_URL" ] || [ "$ARTIFACT_URL" = "null" ]; then
+          echo "::warning::Failed to fetch artifact URL"
+          echo "::endgroup::"
+          exit 0
+        fi
+    
+        echo "📥 Downloading artifact archive as module ZIP"
+        echo "   $ARTIFACT_URL"
+    
+        if curl -fL \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          -o "$MODULE_PATH" \
+          "$ARTIFACT_URL"; then
+    
+          echo "✅ Downloaded:"
+          ls -lh "$MODULE_PATH"
+    
+          FILE_SIZE="$(stat -c%s "$MODULE_PATH" 2>/dev/null || echo 0)"
+    
+          if [ "$FILE_SIZE" -lt 1000 ]; then
+            echo "::warning::Downloaded module ZIP is too small: ${FILE_SIZE} bytes"
+            rm -f "$MODULE_PATH"
+            echo "::endgroup::"
+            exit 0
+          fi
+    
+          if unzip -l "$MODULE_PATH" | grep -q 'module.prop'; then
+            echo "✅ Valid SUSFS module ZIP: module.prop found"
+            echo "MODULE_DOWNLOADED=true" >> "$GITHUB_ENV"
+            echo "MODULE_SOURCE=CI" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Downloaded ZIP does not contain module.prop"
+            echo "ZIP listing:"
+            unzip -l "$MODULE_PATH" | head -n 80 || true
+          fi
+    
+        else
+          echo "::warning::Failed to download artifact"
+        fi
+    
+        echo "AK3 contents after module download:"
+        find "$AK3_FOLDER" -maxdepth 1 -type f -print -exec ls -lh {} \;
+    
+        echo "::endgroup::"
+
     - name: Create Kernel ZIP
       id: create_zip
       shell: bash
