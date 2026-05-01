@@ -32,10 +32,10 @@ on:
         default: OOS14+15+16
 
       ksu_options:
-        description: 'Enter KernelSU build json'
+        description: 'Enter KernelSU build json. Supported types: ksun, ksu, rsksu, sukisu'
         required: true
         type: string
-        default: '[{"type":"rsksu","hash":"main"}]'
+        default: '[{"type":"sukisu","hash":"main"}]'
 
       optimize_level:
         description: 'Compiler optimization level'
@@ -143,7 +143,7 @@ jobs:
               else
                 .type |= ascii_upcase
                 | .type as $t
-                | if (["KSUN", "KSU", "RSKSU"] | index($t) | not) then
+                | if (["KSUN", "KSU", "RSKSU", "SUKISU"] | index($t) | not) then
                     error("Unsupported ksu type: " + $t)
                   else
                     .hash = ((.hash // "") | tostring)
@@ -164,6 +164,7 @@ jobs:
 
           if [ "${{ inputs.make_release }}" = "true" ]; then
             ksu_option_count=$(jq 'length' <<< "$ksu_options_normalized")
+
             if [ "$ksu_option_count" -ne 1 ]; then
               echo "::error::Release mode currently supports exactly one KSU option. Got: $ksu_option_count"
               exit 1
@@ -260,6 +261,10 @@ jobs:
                 owner="ReSukiSU"
                 repo="ReSukiSU"
                 ;;
+              SUKISU)
+                owner="SukiSU-Ultra"
+                repo="SukiSU-Ultra"
+                ;;
               *)
                 echo "::error::Unsupported ksu_type during resolution: $ksu_type" >&2
                 return 1
@@ -287,6 +292,7 @@ jobs:
 
             until [ "$retry_count" -ge "$max_retries" ]; do
               set +e
+
               result=$(gh api graphql \
                 -f query="$query" \
                 -f owner="$owner" \
@@ -294,7 +300,9 @@ jobs:
                 -f headRef="$head_ref" \
                 -f tagRef="$tag_ref" \
                 -f objRef="$ksu_ref" 2>/dev/null)
+
               exit_code=$?
+
               set -e
 
               if [ "$exit_code" -eq 0 ] && [ -n "$result" ]; then
@@ -302,6 +310,7 @@ jobs:
               fi
 
               retry_count=$((retry_count + 1))
+
               echo "::warning::GitHub API failed for $owner/$repo:$ksu_ref attempt $retry_count/$max_retries. Retrying in ${retry_delay}s..." >&2
               sleep "$retry_delay"
             done
@@ -312,6 +321,7 @@ jobs:
             fi
 
             local resolved_sha
+
             resolved_sha=$(echo "$result" | jq -r '.data.repository | (.hb.t.o // .ht.t.o // .ho.o // "unknown")')
 
             if [ "$resolved_sha" = "unknown" ] || [ -z "$resolved_sha" ]; then
@@ -320,6 +330,7 @@ jobs:
             fi
 
             echo "  ✅ Resolved: $ksu_type/$ksu_ref → $resolved_sha" >&2
+
             printf '%s\n' "$resolved_sha"
           }
 
@@ -339,6 +350,7 @@ jobs:
           echo "ksu_options_resolved=$ksu_options_resolved" >> "$GITHUB_OUTPUT"
 
           first_ksu_resolved_hash=$(jq -r '.[0].resolved_hash // "unknown"' <<< "$ksu_options_resolved")
+
           echo "ksu_resolved_hash=$first_ksu_resolved_hash" >> "$GITHUB_OUTPUT"
 
           merged_matrix=$(jq -n \
@@ -361,6 +373,7 @@ jobs:
           echo "✅ Found $final_count build target(s)"
           echo ""
           echo "Selected builds:"
+
           jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version), \(.ksu_type) - \(.ksu_hash) → \(.ksu_resolved_hash))"' <<< "$merged_matrix"
 
           SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
@@ -413,8 +426,10 @@ jobs:
 
             until [ "$RETRY_COUNT" -ge "$MAX_RETRIES" ]; do
               set +e
+
               RESPONSE=$(curl -s --fail -G "https://gitlab.com/api/graphql" --data-urlencode "query=$GL_QUERY")
               EXIT_CODE=$?
+
               set -e
 
               if [ "$EXIT_CODE" -eq 0 ] && [ -n "$RESPONSE" ]; then
@@ -426,6 +441,7 @@ jobs:
                   if [ "${{ inputs.make_release }}" = "true" ]; then
                     extracted=$(echo "$RESPONSE" | jq -r '.data.project.repository.blobs.nodes[0].rawBlob // empty' | grep '#define SUSFS_VERSION' | awk -F'"' '{print $2}')
                     susfs_versions_per_key[$key]="${extracted:-unknown}"
+
                     echo "  ✅ $key → SUSFS_VERSION = ${extracted:-unknown}"
                   fi
 
@@ -434,7 +450,9 @@ jobs:
               fi
 
               RETRY_COUNT=$((RETRY_COUNT + 1))
+
               echo "::warning::GitLab GraphQL API failed for $key attempt $RETRY_COUNT/$MAX_RETRIES. Retrying..."
+
               sleep "$RETRY_DELAY"
             done
 
@@ -449,10 +467,12 @@ jobs:
             fi
 
             susfs_hashes["$key"]="$resolved"
+
             echo "  ✅ Resolved: $key → $resolved"
           done
 
           active_gki_keys_csv=$(IFS=','; echo "${active_keys[*]:-}")
+
           echo "active_gki_keys=$active_gki_keys_csv" >> "$GITHUB_OUTPUT"
 
           echo "susfs_hash_android12_5_10=${susfs_hashes[android12-5.10]:-unknown}" >> "$GITHUB_OUTPUT"
@@ -554,6 +574,9 @@ jobs:
                 ;;
               RSKSU)
                 ksu_label="ReSukiSU"
+                ;;
+              SUKISU)
+                ksu_label="SukiSU Ultra"
                 ;;
               *)
                 ksu_label="$ksu_type"
@@ -666,6 +689,7 @@ jobs:
       ksun_ver: ${{ steps.build-stat.outputs.ksun_ver }}
       ksu_ver: ${{ steps.build-stat.outputs.ksu_ver }}
       rksu_ver: ${{ steps.build-stat.outputs.rksu_ver }}
+      sukisu_ver: ${{ steps.build-stat.outputs.sukisu_ver }}
 
     steps:
       - name: 📥 Checkout Code
@@ -808,6 +832,11 @@ jobs:
 
           echo "Status: ${{ job.status }}"
 
+          echo "ksun_ver=" >> "$GITHUB_OUTPUT"
+          echo "ksu_ver=" >> "$GITHUB_OUTPUT"
+          echo "rksu_ver=" >> "$GITHUB_OUTPUT"
+          echo "sukisu_ver=" >> "$GITHUB_OUTPUT"
+
           if [ "${{ steps.build.outcome }}" = "success" ]; then
             echo ""
             echo "✅ Build completed successfully"
@@ -819,20 +848,21 @@ jobs:
               KSUN)
                 echo "  - KernelSU Next: v${{ steps.build.outputs.ksu_version }}"
                 echo "ksun_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
-                echo "ksu_ver=" >> "$GITHUB_OUTPUT"
-                echo "rksu_ver=" >> "$GITHUB_OUTPUT"
                 ;;
               KSU)
                 echo "  - KernelSU: v${{ steps.build.outputs.ksu_version }}"
-                echo "ksun_ver=" >> "$GITHUB_OUTPUT"
                 echo "ksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
-                echo "rksu_ver=" >> "$GITHUB_OUTPUT"
                 ;;
               RSKSU)
                 echo "  - ReSukiSU: v${{ steps.build.outputs.ksu_version }}"
-                echo "ksun_ver=" >> "$GITHUB_OUTPUT"
-                echo "ksu_ver=" >> "$GITHUB_OUTPUT"
                 echo "rksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
+                ;;
+              SUKISU)
+                echo "  - SukiSU Ultra: v${{ steps.build.outputs.ksu_version }}"
+                echo "sukisu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
+                ;;
+              *)
+                echo "  - Unknown KSU variant: ${{ matrix.ksu_type }}"
                 ;;
             esac
 
@@ -864,12 +894,30 @@ jobs:
         run: |
           set -euo pipefail
 
+          case "${{ matrix.ksu_type }}" in
+            KSUN)
+              ksu_label="KernelSU Next"
+              ;;
+            KSU)
+              ksu_label="KernelSU"
+              ;;
+            RSKSU)
+              ksu_label="ReSukiSU"
+              ;;
+            SUKISU)
+              ksu_label="SukiSU Ultra"
+              ;;
+            *)
+              ksu_label="${{ matrix.ksu_type }}"
+              ;;
+          esac
+
           cat >> "$GITHUB_STEP_SUMMARY" << EOF
 
           ### ${{ matrix.model }} (${{ matrix.os_version }}) - ${{ job.status == 'success' && '✅ Success' || '❌ Failed' }}
 
           **Kernel:** ${{ matrix.android_version }}-${{ matrix.kernel_version }}  
-          **KSU Variant:** ${{ matrix.ksu_type }}  
+          **KSU Variant:** $ksu_label  
           **KSU Ref:** \`${{ matrix.ksu_hash }}\`  
           **KSU Commit:** \`${{ matrix.ksu_resolved_hash }}\`
           EOF
@@ -897,6 +945,9 @@ jobs:
                 ;;
               RSKSU)
                 echo "| **ReSukiSU** | v${{ steps.build.outputs.ksu_version }} |" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+              SUKISU)
+                echo "| **SukiSU Ultra** | v${{ steps.build.outputs.ksu_version }} |" >> "$GITHUB_STEP_SUMMARY"
                 ;;
             esac
 
@@ -1040,6 +1091,11 @@ jobs:
               ksu_repo="ReSukiSU/ReSukiSU"
               ksu_manager_url="https://github.com/ReSukiSU/ReSukiSU/releases"
               ;;
+            SUKISU)
+              ksu_name="SukiSU Ultra"
+              ksu_repo="SukiSU-Ultra/SukiSU-Ultra"
+              ksu_manager_url="https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases"
+              ;;
             *)
               ksu_name="$ksu_type"
               ksu_repo="unknown"
@@ -1068,6 +1124,7 @@ jobs:
             fi
 
             full_model="${model}_${os_version}_${zip_ksu_type}"
+
             device_info["$full_model"]="$model|$os_version|$kernel_version|$zip_ksu_type|$ksu_ver|$susfs_ver"
           done
 
@@ -1077,6 +1134,7 @@ jobs:
           fi
 
           first_entry=$(printf '%s\n' "${!device_info[@]}" | sort | head -n1)
+
           IFS='|' read -r _ _ _ _ ksu_ver_global _ <<< "${device_info[$first_entry]}"
 
           declare -A susfs_map=(
@@ -1149,6 +1207,9 @@ jobs:
               RSKSU)
                 zip_ksu_label="ReSukiSU"
                 ;;
+              SUKISU)
+                zip_ksu_label="SukiSU Ultra"
+                ;;
               *)
                 zip_ksu_label="$zip_ksu_type"
                 ;;
@@ -1182,6 +1243,7 @@ jobs:
 
           for key in "${active_gki_keys[@]}"; do
             [ -n "$key" ] || continue
+
             echo "| $key | \`${susfs_map[$key]:-unknown}\` |" >> release_notes.md
           done
 
@@ -1290,6 +1352,7 @@ jobs:
           - Added Droidspaces support.
           - Added NTSync support.
           - Added ReSukiSU support through \`RSKSU\` builds.
+          - Added SukiSU Ultra support through \`SUKISU\` builds.
 
           ---
 
@@ -1298,6 +1361,7 @@ jobs:
           - **KernelSU Next Team**
           - **KernelSU Team**
           - **ReSukiSU Team**
+          - **SukiSU Ultra Team**
           - **simonpunk** - SUSFS development
           - **OnePlus** - Kernel source code
           - **Community Contributors**
