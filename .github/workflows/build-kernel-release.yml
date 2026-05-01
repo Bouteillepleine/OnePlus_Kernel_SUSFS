@@ -31,6 +31,12 @@ on:
           - android12-5.10
         default: OOS14+15+16
 
+      target_model:
+        description: 'Optional exact model filter, e.g. OP15. Leave empty to build all models matching op_model.'
+        required: false
+        type: string
+        default: ''
+
       ksu_options:
         description: 'Enter KernelSU build json. Supported types: ksun, ksu, rsksu, sukisu'
         required: true
@@ -102,6 +108,9 @@ jobs:
       device_count: ${{ steps.set-matrix.outputs.count }}
       active_gki_keys: ${{ steps.set-matrix.outputs.active_gki_keys }}
 
+      target_model: ${{ steps.set-matrix.outputs.target_model }}
+      target_model_display: ${{ steps.set-matrix.outputs.target_model_display }}
+
       susfs_hash_android12_5_10: ${{ steps.set-matrix.outputs.susfs_hash_android12_5_10 }}
       susfs_hash_android13_5_15: ${{ steps.set-matrix.outputs.susfs_hash_android13_5_15 }}
       susfs_hash_android14_6_1: ${{ steps.set-matrix.outputs.susfs_hash_android14_6_1 }}
@@ -134,7 +143,21 @@ jobs:
           echo "::group::Matrix generation"
 
           input="${{ inputs.op_model }}"
+          target_model="${{ inputs.target_model }}"
+          target_model="$(printf '%s' "$target_model" | xargs)"
           ksu_options_raw='${{ inputs.ksu_options }}'
+
+          if [ -z "$target_model" ]; then
+            target_model_display="All matching models"
+          else
+            target_model_display="$target_model"
+          fi
+
+          echo "target_model=$target_model" >> "$GITHUB_OUTPUT"
+          echo "target_model_display=$target_model_display" >> "$GITHUB_OUTPUT"
+
+          echo "Requested op_model filter: $input"
+          echo "Requested target_model filter: $target_model_display"
 
           if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c '
             map(
@@ -223,14 +246,42 @@ jobs:
               ;;
           esac
 
-          filtered=$(jq -c "$jq_filter" all-configs.json)
+          op_filtered=$(jq -c "$jq_filter" all-configs.json)
+          op_filtered_count=$(jq 'length' <<< "$op_filtered")
+
+          echo "Configs after op_model filter: $op_filtered_count"
+
+          filtered="$op_filtered"
+
+          if [ -n "$target_model" ]; then
+            echo "🎯 Applying exact target_model filter: $target_model"
+
+            before_target_count="$(jq 'length' <<< "$filtered")"
+
+            filtered="$(jq -c --arg target "$target_model" '
+              map(select(.model == $target))
+            ' <<< "$filtered")"
+
+            after_target_count="$(jq 'length' <<< "$filtered")"
+
+            echo "   Before target_model filter: $before_target_count"
+            echo "   After target_model filter:  $after_target_count"
+          fi
+
           device_count=$(jq 'length' <<< "$filtered")
 
           if [ "$device_count" -eq 0 ]; then
-            echo "::error::No config files found for input '$input' after applying filters!"
+            echo "::error::No config files found for op_model='$input' target_model='${target_model:-<empty>}' after applying filters!"
             echo ""
-            echo "Available configurations:"
-            jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version))"' all-configs.json
+
+            if [ -n "$target_model" ]; then
+              echo "Available configurations after op_model filter:"
+              jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version))"' <<< "$op_filtered"
+            else
+              echo "Available configurations:"
+              jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version))"' all-configs.json
+            fi
+
             exit 1
           fi
 
@@ -310,7 +361,6 @@ jobs:
               fi
 
               retry_count=$((retry_count + 1))
-
               echo "::warning::GitHub API failed for $owner/$repo:$ksu_ref attempt $retry_count/$max_retries. Retrying in ${retry_delay}s..." >&2
               sleep "$retry_delay"
             done
@@ -330,7 +380,6 @@ jobs:
             fi
 
             echo "  ✅ Resolved: $ksu_type/$ksu_ref → $resolved_sha" >&2
-
             printf '%s\n' "$resolved_sha"
           }
 
@@ -350,7 +399,6 @@ jobs:
           echo "ksu_options_resolved=$ksu_options_resolved" >> "$GITHUB_OUTPUT"
 
           first_ksu_resolved_hash=$(jq -r '.[0].resolved_hash // "unknown"' <<< "$ksu_options_resolved")
-
           echo "ksu_resolved_hash=$first_ksu_resolved_hash" >> "$GITHUB_OUTPUT"
 
           merged_matrix=$(jq -n \
@@ -373,10 +421,8 @@ jobs:
           echo "✅ Found $final_count build target(s)"
           echo ""
           echo "Selected builds:"
-
           jq -r '.[] | "  - \(.model) (\(.os_version), \(.android_version)-\(.kernel_version), \(.ksu_type) - \(.ksu_hash) → \(.ksu_resolved_hash))"' <<< "$merged_matrix"
 
-          SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
           GITLAB_PROJECT_PATH="simonpunk/susfs4ksu"
 
           declare -A default_branches=(
@@ -450,9 +496,7 @@ jobs:
               fi
 
               RETRY_COUNT=$((RETRY_COUNT + 1))
-
               echo "::warning::GitLab GraphQL API failed for $key attempt $RETRY_COUNT/$MAX_RETRIES. Retrying..."
-
               sleep "$RETRY_DELAY"
             done
 
@@ -467,7 +511,6 @@ jobs:
             fi
 
             susfs_hashes["$key"]="$resolved"
-
             echo "  ✅ Resolved: $key → $resolved"
           done
 
@@ -561,6 +604,7 @@ jobs:
           set -euo pipefail
 
           matrix_json='${{ steps.set-matrix.outputs.matrix }}'
+          target_model_display='${{ steps.set-matrix.outputs.target_model_display }}'
 
           ksu_display_lines=""
 
@@ -608,7 +652,8 @@ jobs:
           {
             echo "## 🎯 Build Plan"
             echo ""
-            echo "**Target:** ${{ inputs.op_model }}"
+            echo "**Target Group:** ${{ inputs.op_model }}"
+            echo "**Target Model:** $target_model_display"
             echo "**Build Targets:** ${{ steps.set-matrix.outputs.count }}"
             echo ""
             echo "**Configuration:**"
@@ -619,6 +664,16 @@ jobs:
             echo "- Create Release: ${{ inputs.make_release && '✅ Yes' || '❌ No' }}"
             echo "- Create Debug Artifacts: ${{ inputs.debug && '✅ Yes' || '❌ No' }}"
             echo "- Sync toolchains: ${{ inputs.mirror_toolchains && '✅ Yes' || '❌ No' }}"
+            echo ""
+            echo "**Selected Build Matrix:**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          jq -r '
+            .include[]
+            | "- `\(.model)` / `\(.os_version)` / `\(.android_version)-\(.kernel_version)` / `\(.ksu_type)`"
+          ' <<< "$matrix_json" >> "$GITHUB_STEP_SUMMARY"
+
+          {
             echo ""
             echo "**SUSFS Configuration:**"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -641,20 +696,24 @@ jobs:
 
           IFS=',' read -ra active_keys_display <<< "${{ steps.set-matrix.outputs.active_gki_keys }}"
 
-          for key in "${active_keys_display[@]}"; do
-            [ -n "$key" ] || continue
+          if [ "${#active_keys_display[@]}" -eq 0 ] || [ -z "${active_keys_display[0]:-}" ]; then
+            echo "- No SUSFS-enabled targets selected." >> "$GITHUB_STEP_SUMMARY"
+          else
+            for key in "${active_keys_display[@]}"; do
+              [ -n "$key" ] || continue
 
-            value="${susfs_inputs[$key]:-}"
-            fetched_hash="${step_hashes[$key]:-unknown}"
+              value="${susfs_inputs[$key]:-}"
+              fetched_hash="${step_hashes[$key]:-unknown}"
 
-            if [ -z "$value" ]; then
-              echo "- $key: 🔄 auto (\`$fetched_hash\`)" >> "$GITHUB_STEP_SUMMARY"
-            elif [[ "$value" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "- $key: 📌 \`$value\`" >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "- $key: 🔀 \`$value\` (\`$fetched_hash\`)" >> "$GITHUB_STEP_SUMMARY"
-            fi
-          done
+              if [ -z "$value" ]; then
+                echo "- $key: 🔄 auto (\`$fetched_hash\`)" >> "$GITHUB_STEP_SUMMARY"
+              elif [[ "$value" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "- $key: 📌 \`$value\`" >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "- $key: 🔀 \`$value\` (\`$fetched_hash\`)" >> "$GITHUB_STEP_SUMMARY"
+              fi
+            done
+          fi
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "> **💡 Note:** Hashes are resolved at run time via API calls before builds start." >> "$GITHUB_STEP_SUMMARY"
@@ -662,6 +721,11 @@ jobs:
           if [[ "${{ inputs.op_model }}" == android*-*.* ]]; then
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "> **⚠️ Android-Kernel Filter:** Only OOS15 and OOS16 devices will be built for \`${{ inputs.op_model }}\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "${{ steps.set-matrix.outputs.target_model }}" != "" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "> **🎯 Target Model Filter:** Only exact model \`${{ steps.set-matrix.outputs.target_model }}\` is included." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   mirror_toolchain:
@@ -819,6 +883,10 @@ jobs:
           set -euo pipefail
           echo "::group::Build Statistics"
 
+          target_model_display="${{ needs.set-op-model.outputs.target_model_display }}"
+
+          echo "Target Group: ${{ inputs.op_model }}"
+          echo "Target Model Filter: $target_model_display"
           echo "Device: ${{ matrix.model }}"
           echo "OS Version: ${{ matrix.os_version }}"
           echo "Kernel: ${{ matrix.android_version }}-${{ matrix.kernel_version }}"
@@ -894,6 +962,8 @@ jobs:
         run: |
           set -euo pipefail
 
+          target_model_display="${{ needs.set-op-model.outputs.target_model_display }}"
+
           case "${{ matrix.ksu_type }}" in
             KSUN)
               ksu_label="KernelSU Next"
@@ -916,6 +986,8 @@ jobs:
 
           ### ${{ matrix.model }} (${{ matrix.os_version }}) - ${{ job.status == 'success' && '✅ Success' || '❌ Failed' }}
 
+          **Target Group:** ${{ inputs.op_model }}  
+          **Target Model Filter:** $target_model_display  
           **Kernel:** ${{ matrix.android_version }}-${{ matrix.kernel_version }}  
           **KSU Variant:** $ksu_label  
           **KSU Ref:** \`${{ matrix.ksu_hash }}\`  
@@ -933,6 +1005,10 @@ jobs:
 
           | Metric | Value |
           |--------|-------|
+          | **Target Group** | ${{ inputs.op_model }} |
+          | **Target Model Filter** | $target_model_display |
+          | **Model** | ${{ matrix.model }} |
+          | **OS Version** | ${{ matrix.os_version }} |
           | **Kernel** | ${{ steps.build.outputs.kernel_version }} |
           EOF
 
@@ -1012,6 +1088,8 @@ jobs:
       REPO_NAME: ${{ github.event.repository.name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SUSFS_BASE_VERSION: ${{ needs.set-op-model.outputs.susfs_base_version }}
+      TARGET_GROUP: ${{ inputs.op_model }}
+      TARGET_MODEL_DISPLAY: ${{ needs.set-op-model.outputs.target_model_display }}
       RELEASE_NAME: '*TEST BUILD* OnePlus Kernels With KernelSU Variants & SUSFS ${{ needs.set-op-model.outputs.susfs_base_version }} *TEST BUILD*'
 
     steps:
@@ -1124,7 +1202,6 @@ jobs:
             fi
 
             full_model="${model}_${os_version}_${zip_ksu_type}"
-
             device_info["$full_model"]="$model|$os_version|$kernel_version|$zip_ksu_type|$ksu_ver|$susfs_ver"
           done
 
@@ -1134,7 +1211,6 @@ jobs:
           fi
 
           first_entry=$(printf '%s\n' "${!device_info[@]}" | sort | head -n1)
-
           IFS='|' read -r _ _ _ _ ksu_ver_global _ <<< "${device_info[$first_entry]}"
 
           declare -A susfs_map=(
@@ -1226,6 +1302,8 @@ jobs:
 
           | Component | Version/Setting |
           |-----------|-----------------|
+          | **Target Group** | \`$TARGET_GROUP\` |
+          | **Target Model Filter** | \`$TARGET_MODEL_DISPLAY\` |
           | **Root Variant** | \`$ksu_name\` |
           | **Root Repository** | \`$ksu_repo\` |
           | **Root Ref** | \`$ksu_display\` |
@@ -1243,7 +1321,6 @@ jobs:
 
           for key in "${active_gki_keys[@]}"; do
             [ -n "$key" ] || continue
-
             echo "| $key | \`${susfs_map[$key]:-unknown}\` |" >> release_notes.md
           done
 
@@ -1410,6 +1487,8 @@ jobs:
             echo "## 🎉 Release Created Successfully"
             echo ""
             echo "**Tag:** [\`${{ env.NEW_TAG }}\`](${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ env.NEW_TAG }})"
+            echo "**Target Group:** \`${{ env.TARGET_GROUP }}\`"
+            echo "**Target Model Filter:** \`${{ env.TARGET_MODEL_DISPLAY }}\`"
             echo "**Kernels:** $(find ./downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | wc -l)"
             echo ""
             echo "### 📦 Assets"
