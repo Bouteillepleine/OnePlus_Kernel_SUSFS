@@ -11,7 +11,7 @@ inputs:
     default: 'KSUN'
 
   ksu_branch_or_hash:
-    description: 'KSU branch, commit hash, or SukiSU meta format branch/custom_tag/manual_hash. Empty = auto-detect by ksu_type.'
+    description: 'KSU branch or commit hash (empty = auto-detect by ksu_type)'
     required: false
     default: ''
 
@@ -1049,69 +1049,17 @@ runs:
 
         KSU_INPUT="${{ inputs.ksu_branch_or_hash }}"
 
-        SUKISU_SETUP_BRANCH="main"
-        SUKISU_BRANCH_NAME=""
-        SUKISU_CUSTOM_TAG=""
-        SUKISU_MANUAL_HASH=""
-
-        # Supported formats:
-        #   empty
-        #   builtin
-        #   main
-        #   40-char commit hash
-        #   branch/custom_tag/manual_hash
         if [ -z "$KSU_INPUT" ]; then
-          SUKISU_BRANCH_NAME="builtin"
           echo "No SukiSU branch/hash provided. Using builtin installer mode."
 
-        elif [[ "$KSU_INPUT" == */*/* ]]; then
-          slash_count="$(grep -o '/' <<< "$KSU_INPUT" | wc -l | tr -d ' ')"
-
-          if [ "$slash_count" -lt 2 ]; then
-            echo "::error::Invalid SukiSU meta format."
-            echo "Expected format: branch/custom_tag/manual_hash"
-            echo "Examples:"
-            echo "  builtin/Numbersf/"
-            echo "  builtin/Numbersf/9f4d36bd3b14ee49a8fab81ecab38076d330ad42"
-            exit 1
-          fi
-
-          IFS='/' read -r SUKISU_BRANCH_NAME SUKISU_CUSTOM_TAG SUKISU_MANUAL_HASH <<< "$KSU_INPUT"
-
-          if [ -z "$SUKISU_BRANCH_NAME" ]; then
-            echo "::error::SukiSU branch name cannot be empty in meta format."
-            exit 1
-          fi
-
-          echo "SukiSU branch name: $SUKISU_BRANCH_NAME"
-
-          if [ -n "$SUKISU_CUSTOM_TAG" ]; then
-            echo "SukiSU custom tag: $SUKISU_CUSTOM_TAG"
-          else
-            echo "SukiSU custom tag: disabled"
-          fi
-
-          if [ -n "$SUKISU_MANUAL_HASH" ]; then
-            echo "SukiSU manual hash: $SUKISU_MANUAL_HASH"
-          else
-            echo "SukiSU manual hash: disabled"
-          fi
-
-        elif [[ "$KSU_INPUT" =~ ^[0-9a-fA-F]{40}$ ]]; then
-          SUKISU_BRANCH_NAME="builtin"
-          SUKISU_MANUAL_HASH="$KSU_INPUT"
-
-          echo "SukiSU manual hash provided."
-          echo "Installing builtin first, then checking out:"
-          echo "  $SUKISU_MANUAL_HASH"
-
+          curl --fail --location --proto '=https' -LSs \
+            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
         else
-          SUKISU_BRANCH_NAME="$KSU_INPUT"
-          echo "Using SukiSU branch: $SUKISU_BRANCH_NAME"
-        fi
+          echo "Using SukiSU branch/hash: $KSU_INPUT"
 
-        curl --fail --location --proto '=https' -LSs \
-          "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/${SUKISU_SETUP_BRANCH}/kernel/setup.sh" | bash -s "$SUKISU_BRANCH_NAME"
+          curl --fail --location --proto '=https' -LSs \
+            "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s "$KSU_INPUT"
+        fi
 
         if [ ! -d "$KERNEL_PLATFORM_FOLDER/KernelSU" ]; then
           echo "::error::KernelSU directory was not created by SukiSU setup."
@@ -1122,134 +1070,37 @@ runs:
 
         cd "$KERNEL_PLATFORM_FOLDER/KernelSU"
 
-        if [ -n "$SUKISU_MANUAL_HASH" ]; then
-          echo "Checking out SukiSU manual hash: $SUKISU_MANUAL_HASH"
-
-          git fetch origin "$SUKISU_BRANCH_NAME" --depth=100000 || true
-          git fetch origin "$SUKISU_MANUAL_HASH" --depth=1 || true
-          git fetch origin '+refs/heads/*:refs/remotes/origin/*' --depth=100000 || true
-          git fetch --tags --depth=100000 || true
-
-          git checkout "$SUKISU_MANUAL_HASH"
-
-          echo "Checked out SukiSU manual hash."
-        fi
-
-        # If the repository is shallow, fetch more history so the commit count is correct.
-        if git rev-parse --is-shallow-repository >/dev/null 2>&1; then
-          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
-            echo "Repository is shallow. Fetching full history for accurate SukiSU version..."
-            git fetch --unshallow --tags || git fetch --depth=100000 --tags || true
-          fi
-        fi
-
         KSU_COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
-        KSU_SHORT_SHA="$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"
+        COMMITS_COUNT="$(git rev-list --count HEAD 2>/dev/null || echo 30000)"
 
-        COMMITS_COUNT="$(/usr/bin/git rev-list --count HEAD 2>/dev/null || echo 13000)"
-
-        # SukiSU Ultra version formula:
-        # version = commit_count + 37185
-        KSU_VERSION=$((COMMITS_COUNT + 37185))
+        KSU_VERSION=$((COMMITS_COUNT + 10606))
 
         echo "Detected SukiSU commits: $COMMITS_COUNT"
         echo "Calculated SukiSU Ultra version: $KSU_VERSION"
         echo "SukiSU Ultra commit: $KSU_COMMIT_SHA"
 
-        KSU_VERSION_TAG="$(curl -fsSL https://api.github.com/repos/SukiSU-Ultra/SukiSU-Ultra/releases/latest \
-          | grep '"tag_name":' \
-          | sed -E 's/.*"v?([^"]+)".*/\1/' || true)"
-
-        if [[ -z "$KSU_VERSION_TAG" || "$(printf '%s\n' "$KSU_VERSION_TAG" "3.1.7" | sort -V | head -n1)" != "3.1.7" ]]; then
-          KSU_VERSION_TAG="3.1.7"
-        fi
-
-        GIT_HASH="$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)"
-
-        if [ -n "$SUKISU_MANUAL_HASH" ]; then
-          USE_HASH="${SUKISU_MANUAL_HASH:0:8}"
-        else
-          USE_HASH="$GIT_HASH"
-        fi
-
-        if [ -z "$SUKISU_CUSTOM_TAG" ]; then
-          VERSION_FULL="v${KSU_VERSION_TAG}-${USE_HASH}@${SUKISU_BRANCH_NAME}"
-        else
-          VERSION_FULL="v${KSU_VERSION_TAG}-${SUKISU_CUSTOM_TAG}@${SUKISU_BRANCH_NAME}[${USE_HASH}]"
-        fi
-
-        ESC_VERSION_FULL="$(printf '%s' "$VERSION_FULL" | sed 's/[&|\\/]/\\&/g')"
-        ESC_KSU_VERSION_TAG="$(printf '%s' "$KSU_VERSION_TAG" | sed 's/[&|\\/]/\\&/g')"
-
         if [ -f "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Makefile" ]; then
-          MAKEFILE_PATH="$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Makefile"
-
-          # Robustly update DKSU_VERSION across common Makefile styles:
-          #   DKSU_VERSION=123
-          #   DKSU_VERSION := 123
-          #   DKSU_VERSION ?= 123
-          #   DKSU_VERSION += 123
-          perl -0pi -e 's/(DKSU_VERSION\s*[:?+]?=\s*)\d+/${1}'"${KSU_VERSION}"'/g' "$MAKEFILE_PATH" || true
-
-          # Fallback for compact generated forms.
-          sed -i "s/DKSU_VERSION=[0-9]*/DKSU_VERSION=${KSU_VERSION}/g" "$MAKEFILE_PATH" || true
-
-          if grep -q '^KSU_VERSION_FULL := ' "$MAKEFILE_PATH"; then
-            sed -i "s|^KSU_VERSION_FULL := .*|KSU_VERSION_FULL := $ESC_VERSION_FULL|" "$MAKEFILE_PATH"
-          else
-            awk -v full="$VERSION_FULL" '
-              /^REPO_OWNER :=/ && !done {
-                print
-                print ""
-                print "KSU_VERSION_FULL := " full
-                done=1
-                next
-              }
-              { print }
-            ' "$MAKEFILE_PATH" > "$MAKEFILE_PATH.tmp" && mv "$MAKEFILE_PATH.tmp" "$MAKEFILE_PATH"
-          fi
-
-          if grep -q '^KSU_VERSION_API := ' "$MAKEFILE_PATH"; then
-            sed -i "s|^KSU_VERSION_API := .*|KSU_VERSION_API := $ESC_KSU_VERSION_TAG|" "$MAKEFILE_PATH"
-          fi
-
-          echo "::group::SukiSU Ultra Makefile version preview"
-          grep -nE 'KSU_VERSION|DKSU_VERSION|VERSION_TAG|REPO_|GIT_BIN|CURL_BIN' "$MAKEFILE_PATH" || true
-          echo "::endgroup::"
-
-          if grep -qE "DKSU_VERSION[[:space:]]*[:?+]?=[[:space:]]*${KSU_VERSION}" "$MAKEFILE_PATH"; then
-            echo "✅ Makefile DKSU_VERSION set to ${KSU_VERSION}"
-          else
-            echo "::warning::Could not verify DKSU_VERSION=${KSU_VERSION} in SukiSU Makefile"
-            grep -nE 'DKSU_VERSION|KSU_VERSION' "$MAKEFILE_PATH" || true
-          fi
-        else
-          echo "::warning::SukiSU kernel Makefile not found at KernelSU/kernel/Makefile"
+          sed -i "s/DKSU_VERSION=[0-9]*/DKSU_VERSION=${KSU_VERSION}/" "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Makefile" || true
+          sed -i "s/DKSU_VERSION=12800/DKSU_VERSION=${KSU_VERSION}/" "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Makefile" || true
+          sed -i "s/DKSU_VERSION=11998/DKSU_VERSION=${KSU_VERSION}/" "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Makefile" || true
+          sed -i "s/DKSU_VERSION=16/DKSU_VERSION=${KSU_VERSION}/" "$KERNEL_PLATFORM_FOLDER/KernelSU/kernel/Makefile" || true
         fi
 
-        {
-          echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA"
-          echo "KSUVER=$KSU_VERSION"
-          echo "SUKISU_VERSION_TAG=$KSU_VERSION_TAG"
-          echo "SUKISU_VERSION_FULL=$VERSION_FULL"
-          echo "SUKISU_BRANCH_NAME=$SUKISU_BRANCH_NAME"
-          echo "SUKISU_CUSTOM_TAG=$SUKISU_CUSTOM_TAG"
-          echo "SUKISU_MANUAL_HASH=$SUKISU_MANUAL_HASH"
-          echo "NEED_HOOKS=false"
-        } >> "$GITHUB_ENV"
+        echo "KSU_COMMIT_SHA=$KSU_COMMIT_SHA" >> "$GITHUB_ENV"
+        echo "KSUVER=$KSU_VERSION" >> "$GITHUB_ENV"
+        echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
 
         echo "Add SukiSU Ultra Configuration Settings"
 
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_KSU=y
-        CONFIG_KPM=n
+        CONFIG_KPM=y
         EOF
 
         echo "SUKISU" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
         echo "$KSU_VERSION" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
 
         echo "SukiSU Ultra Version: $KSU_VERSION"
-        echo "SukiSU Ultra Version Full: $VERSION_FULL"
         echo "✅ SukiSU Ultra added commit: ${KSU_COMMIT_SHA:0:8}"
 
         echo "::endgroup::"
@@ -1279,9 +1130,7 @@ runs:
           [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$1" ]
         }
 
-        if [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-          echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
-        elif version_lte "${susfs_version:1}" "1.5.12"; then
+        if version_lte "${susfs_version:1}" "1.5.12"; then
           echo "NEED_HOOKS=true" >> "$GITHUB_ENV"
         else
           echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
@@ -1406,7 +1255,7 @@ runs:
 
         cd "$COMMON_KERNEL_FOLDER"
 
-        # ===== KSUN / SukiSU Ultra compatibility fixes before main SUSFS kernel patch =====
+        # ===== KSUN / SukiSU Ultra compatibility fixes =====
         if [ "${{ inputs.ksu_type }}" = "KSUN" ] || [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
           echo "Applying KSUN / SukiSU compatibility fixes..."
 
@@ -1497,48 +1346,10 @@ runs:
               fi
             fi
 
-            DISPATCH_C="drivers/kernelsu/supercall/dispatch.c"
-
-            if [ -f "$DISPATCH_C" ] && grep -q "KERNEL_SU_VERSION" "$DISPATCH_C" 2>/dev/null; then
-              KERNEL_SU_VERSION_DEFINE="${KSUVER:-40754}"
-
-              echo "Checking KERNEL_SU_VERSION in $DISPATCH_C"
-              echo "Using KERNEL_SU_VERSION_DEFINE=${KERNEL_SU_VERSION_DEFINE}"
-
-              if grep -qE '^[[:space:]]*#define[[:space:]]+KERNEL_SU_VERSION[[:space:]]+[0-9]+' "$DISPATCH_C"; then
-                sed -i -E \
-                  "s/^[[:space:]]*#define[[:space:]]+KERNEL_SU_VERSION[[:space:]]+[0-9]+/#define KERNEL_SU_VERSION ${KERNEL_SU_VERSION_DEFINE}/" \
-                  "$DISPATCH_C"
-
-                echo "Updated numeric KERNEL_SU_VERSION to ${KERNEL_SU_VERSION_DEFINE}"
-
-              elif ! grep -qE '^[[:space:]]*#define[[:space:]]+KERNEL_SU_VERSION\b' "$DISPATCH_C"; then
-                tmp_dispatch="$(mktemp)"
-
-                {
-                  echo "#ifndef KERNEL_SU_VERSION"
-                  echo "#define KERNEL_SU_VERSION ${KERNEL_SU_VERSION_DEFINE}"
-                  echo "#endif"
-                  cat "$DISPATCH_C"
-                } > "$tmp_dispatch"
-
-                mv "$tmp_dispatch" "$DISPATCH_C"
-
-                echo "Inserted fallback KERNEL_SU_VERSION=${KERNEL_SU_VERSION_DEFINE}"
-
-              else
-                existing_kernel_su_version="$(
-                  grep -nE '^[[:space:]]*#define[[:space:]]+KERNEL_SU_VERSION\b' "$DISPATCH_C" | head -n 1 || true
-                )"
-
-                echo "KERNEL_SU_VERSION already defined:"
-                echo "  ${existing_kernel_su_version}"
-              fi
-
-              echo "KERNEL_SU_VERSION preview:"
-              grep -n "KERNEL_SU_VERSION" "$DISPATCH_C" | head -n 10 || true
-            else
-              echo "No KERNEL_SU_VERSION fallback needed for SukiSU dispatch.c"
+            if grep -q "KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c 2>/dev/null; then
+              grep -q "#define KERNEL_SU_VERSION" drivers/kernelsu/supercall/dispatch.c || \
+                sed -i '1i\#ifndef KERNEL_SU_VERSION\n#define KERNEL_SU_VERSION 40754\n#endif' \
+                drivers/kernelsu/supercall/dispatch.c
             fi
 
             if [ -f drivers/kernelsu/runtime/ksud.c ]; then
@@ -1563,7 +1374,7 @@ runs:
             fi
           fi
         fi
-        # ===== End KSUN / SukiSU Ultra compatibility fixes before main SUSFS kernel patch =====
+        # ===== End KSUN / SukiSU Ultra compatibility fixes =====
 
         if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
           if ! grep -qxF '#include <trace/hooks/fs.h>' ./fs/namespace.c; then
@@ -1613,31 +1424,6 @@ runs:
         fi
 
         patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
-
-        # ===== Post-SUSFS SukiSU common-tree fixes =====
-        if [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
-          echo "Applying post-SUSFS SukiSU common-tree fixes..."
-
-          sed -i \
-            's/extern struct static_key_true ksu_is_init_rc_hook_enabled;/DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);/' \
-            fs/stat.c 2>/dev/null || true
-
-          sed -i \
-            's/extern struct static_key_true ksu_is_input_hook_enabled;/DEFINE_STATIC_KEY_FALSE(ksu_is_input_hook_enabled);/' \
-            drivers/input/input.c 2>/dev/null || true
-
-          if [ -f fs/read_write.c ]; then
-            grep -q "DEFINE_STATIC_KEY_FALSE.*ksu_is_init_rc_hook_enabled" fs/read_write.c || \
-              sed -i \
-                's/DEFINE_STATIC_KEY_FALSE(ksu_is_init_rc_hook_enabled);/extern struct static_key_true ksu_is_init_rc_hook_enabled;/' \
-                fs/read_write.c 2>/dev/null || true
-          fi
-
-          echo "Post-SUSFS static key preview:"
-          grep -nE 'ksu_is_init_rc_hook_enabled|ksu_is_input_hook_enabled' \
-            fs/stat.c drivers/input/input.c fs/read_write.c 2>/dev/null || true
-        fi
-        # ===== End post-SUSFS SukiSU common-tree fixes =====
 
         if [ "$fake_patched" = 1 ]; then
           if [ "${{ env.ANDROID_VER }}" = "android15" ] && [ "${{ env.KERNEL_VER }}" = "6.6" ]; then
@@ -2549,10 +2335,6 @@ runs:
             echo "ReSukiSU commit SHA: ${KSU_SHA:-unknown}"
           elif [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
             echo "SukiSU Ultra Version: ${KSUVER:-unknown}"
-            echo "SukiSU Ultra Version Full: ${SUKISU_VERSION_FULL:-unknown}"
-            echo "SukiSU Ultra Branch: ${SUKISU_BRANCH_NAME:-unknown}"
-            echo "SukiSU Ultra Custom Tag: ${SUKISU_CUSTOM_TAG:-none}"
-            echo "SukiSU Ultra Manual Hash: ${SUKISU_MANUAL_HASH:-none}"
             echo "SukiSU Ultra commit SHA: ${KSU_SHA:-unknown}"
           else
             echo "KSU Version: ${KSUVER:-unknown}"
@@ -2611,10 +2393,6 @@ runs:
             echo "| **ReSukiSU Version** | ${KSUVER:-unknown} |"
           elif [ "${{ inputs.ksu_type }}" = "SUKISU" ]; then
             echo "| **SukiSU Ultra Version** | ${KSUVER:-unknown} |"
-            echo "| **SukiSU Ultra Version Full** | ${SUKISU_VERSION_FULL:-unknown} |"
-            echo "| **SukiSU Ultra Branch** | ${SUKISU_BRANCH_NAME:-unknown} |"
-            echo "| **SukiSU Ultra Custom Tag** | ${SUKISU_CUSTOM_TAG:-none} |"
-            echo "| **SukiSU Ultra Manual Hash** | ${SUKISU_MANUAL_HASH:-none} |"
           else
             echo "| **KSU Version** | ${KSUVER:-unknown} |"
           fi
