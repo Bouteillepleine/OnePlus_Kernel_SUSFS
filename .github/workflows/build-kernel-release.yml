@@ -588,11 +588,23 @@ jobs:
 
       - name: 📊 Build plan summary
         shell: bash
+        env:
+          MATRIX_JSON: ${{ steps.set-matrix.outputs.matrix }}
+          TARGET_MODEL_DISPLAY: ${{ steps.set-matrix.outputs.target_model_display }}
+          TARGET_MODEL_FILTER: ${{ steps.set-matrix.outputs.target_model }}
+          BUILD_TARGET_COUNT: ${{ steps.set-matrix.outputs.count }}
+          ACTIVE_GKI_KEYS: ${{ steps.set-matrix.outputs.active_gki_keys }}
+
+          SUSFS_HASH_ANDROID12_5_10: ${{ steps.set-matrix.outputs.susfs_hash_android12_5_10 }}
+          SUSFS_HASH_ANDROID13_5_15: ${{ steps.set-matrix.outputs.susfs_hash_android13_5_15 }}
+          SUSFS_HASH_ANDROID14_6_1: ${{ steps.set-matrix.outputs.susfs_hash_android14_6_1 }}
+          SUSFS_HASH_ANDROID15_6_6: ${{ steps.set-matrix.outputs.susfs_hash_android15_6_6 }}
+          SUSFS_HASH_ANDROID16_6_12: ${{ steps.set-matrix.outputs.susfs_hash_android16_6_12 }}
         run: |
           set -euo pipefail
 
-          matrix_json='${{ steps.set-matrix.outputs.matrix }}'
-          target_model_display='${{ steps.set-matrix.outputs.target_model_display }}'
+          matrix_json="$MATRIX_JSON"
+          target_model_display="$TARGET_MODEL_DISPLAY"
 
           ksu_display_lines=""
 
@@ -638,10 +650,15 @@ jobs:
             echo "## 🎯 Build Plan"
             echo ""
             echo "**Target Group:** ${{ inputs.op_model }}"
-            echo "**Target Model:** $target_model_display"
-            echo "**Build Targets:** ${{ steps.set-matrix.outputs.count }}"
             echo ""
-            echo "**Configuration:**"
+            echo "**Target Model:** $target_model_display"
+            echo ""
+            echo "**Build Targets:** $BUILD_TARGET_COUNT"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## ⚙️ Configuration"
+            echo ""
             printf '%s' "$ksu_display_lines"
             echo "- Build Timestamp: $build_ts_display"
             echo "- Optimization: ${{ inputs.optimize_level }}"
@@ -650,17 +667,31 @@ jobs:
             echo "- Create Debug Artifacts: ${{ inputs.debug && '✅ Yes' || '❌ No' }}"
             echo "- Sync toolchains: ${{ inputs.mirror_toolchains && '✅ Yes' || '❌ No' }}"
             echo ""
-            echo "**Selected Build Matrix:**"
+            echo "---"
+            echo ""
+            echo "## 📦 Selected Build Matrix"
+            echo ""
+            echo "<details>"
+            echo "<summary><strong>Show selected build matrix: $BUILD_TARGET_COUNT targets</strong></summary>"
+            echo ""
+            echo "| # | Model | OOS | Android / Kernel | KSU | KSU Ref | KSU Commit |"
+            echo "|---:|-------|-----|------------------|-----|---------|------------|"
           } >> "$GITHUB_STEP_SUMMARY"
 
           jq -r '
-            .include[]
-            | "- `\(.model)` / `\(.os_version)` / `\(.android_version)-\(.kernel_version)` / `\(.ksu_type)`"
+            .include
+            | to_entries[]
+            | "| \(.key + 1) | `\(.value.model)` | `\(.value.os_version)` | `\(.value.android_version)-\(.value.kernel_version)` | `\(.value.ksu_type)` | `\(.value.ksu_hash)` | `\(.value.ksu_resolved_hash)` |"
           ' <<< "$matrix_json" >> "$GITHUB_STEP_SUMMARY"
 
           {
             echo ""
-            echo "**SUSFS Configuration:**"
+            echo "</details>"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 🧩 SUSFS Configuration"
+            echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
           declare -A susfs_inputs=(
@@ -672,18 +703,23 @@ jobs:
           )
 
           declare -A step_hashes=(
-            ["android12-5.10"]="${{ steps.set-matrix.outputs.susfs_hash_android12_5_10 }}"
-            ["android13-5.15"]="${{ steps.set-matrix.outputs.susfs_hash_android13_5_15 }}"
-            ["android14-6.1"]="${{ steps.set-matrix.outputs.susfs_hash_android14_6_1 }}"
-            ["android15-6.6"]="${{ steps.set-matrix.outputs.susfs_hash_android15_6_6 }}"
-            ["android16-6.12"]="${{ steps.set-matrix.outputs.susfs_hash_android16_6_12 }}"
+            ["android12-5.10"]="$SUSFS_HASH_ANDROID12_5_10"
+            ["android13-5.15"]="$SUSFS_HASH_ANDROID13_5_15"
+            ["android14-6.1"]="$SUSFS_HASH_ANDROID14_6_1"
+            ["android15-6.6"]="$SUSFS_HASH_ANDROID15_6_6"
+            ["android16-6.12"]="$SUSFS_HASH_ANDROID16_6_12"
           )
 
-          IFS=',' read -ra active_keys_display <<< "${{ steps.set-matrix.outputs.active_gki_keys }}"
+          IFS=',' read -ra active_keys_display <<< "$ACTIVE_GKI_KEYS"
 
           if [ "${#active_keys_display[@]}" -eq 0 ] || [ -z "${active_keys_display[0]:-}" ]; then
             echo "- No SUSFS-enabled targets selected." >> "$GITHUB_STEP_SUMMARY"
           else
+            {
+              echo "| Android / Kernel | SUSFS Ref |"
+              echo "|------------------|-----------|"
+            } >> "$GITHUB_STEP_SUMMARY"
+
             for key in "${active_keys_display[@]}"; do
               [ -n "$key" ] || continue
 
@@ -691,26 +727,32 @@ jobs:
               fetched_hash="${step_hashes[$key]:-unknown}"
 
               if [ -z "$value" ]; then
-                echo "- $key: 🔄 auto (\`$fetched_hash\`)" >> "$GITHUB_STEP_SUMMARY"
+                echo "| \`$key\` | 🔄 auto (\`$fetched_hash\`) |" >> "$GITHUB_STEP_SUMMARY"
               elif [[ "$value" =~ ^[0-9a-f]{40}$ ]]; then
-                echo "- $key: 📌 \`$value\`" >> "$GITHUB_STEP_SUMMARY"
+                echo "| \`$key\` | 📌 \`$value\` |" >> "$GITHUB_STEP_SUMMARY"
               else
-                echo "- $key: 🔀 \`$value\` (\`$fetched_hash\`)" >> "$GITHUB_STEP_SUMMARY"
+                echo "| \`$key\` | 🔀 \`$value\` (\`$fetched_hash\`) |" >> "$GITHUB_STEP_SUMMARY"
               fi
             done
           fi
 
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "> **💡 Note:** Hashes are resolved at run time via API calls before builds start." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo ""
+            echo "> **💡 Note:** Hashes are resolved at run time via API calls before builds start."
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [[ "${{ inputs.op_model }}" == android*-*.* ]]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> **⚠️ Android-Kernel Filter:** Only OOS15 and OOS16 devices will be built for \`${{ inputs.op_model }}\`." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo ""
+              echo "> **⚠️ Android-Kernel Filter:** Only OOS15 and OOS16 devices will be built for \`${{ inputs.op_model }}\`."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-          if [ "${{ steps.set-matrix.outputs.target_model }}" != "" ]; then
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "> **🎯 Target Model Filter:** Only exact model \`${{ steps.set-matrix.outputs.target_model }}\` is included." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$TARGET_MODEL_FILTER" != "" ]; then
+            {
+              echo ""
+              echo "> **🎯 Target Model Filter:** Only exact model \`$TARGET_MODEL_FILTER\` is included."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
   mirror_toolchain:
