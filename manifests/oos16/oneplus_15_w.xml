@@ -4,7 +4,7 @@
   <remote fetch="https://github.com/OnePlusOSS" name="origin"/>
   <remote fetch="https://github.com/WildKernels" name="wild"/>
   <remote fetch="https://github.com/Bouteillepleine" name="bouteillepleine"/>
-  <project remote="bouteillepleine" name="AnyKernel3" path="AnyKernel3" revision="main"/>
+  <project remote="bouteillepleine" name="AnyKernel3" path="AnyKernel3" revision="gki-2.0"/>
   
   <remote fetch="https://android.googlesource.com" name="aosp"/>
   <default revision="main-kernel-2025" remote="aosp" sync-j="4" />
