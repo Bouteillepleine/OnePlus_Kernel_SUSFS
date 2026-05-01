@@ -1036,7 +1036,7 @@ runs:
 
         echo "::endgroup::"
 
-        - name: Add SukiSU Ultra
+    - name: Add SukiSU Ultra
       shell: bash
       if: ${{ inputs.ksu_type == 'SUKISU' }}
       run: |
