@@ -29,6 +29,8 @@ on:
           - android13-5.15
           - android12-5.10
         default: OOS14+15+16
+      target_model:
+        description: 'Optional exact model filter, e.g. OP15. Leave empty to build all models matching op_model.'
       ksu_options:
         description: 'Enter KernelSU build json'
         required: true
@@ -113,6 +115,7 @@ jobs:
           echo "::group::Matrix generation"
           
           input="${{ github.event.inputs.op_model }}"
+          target_model="${{ github.event.inputs.target_model }}"
           ksu_options_raw='${{ github.event.inputs.ksu_options }}'
           if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then if .type == "KSUN" then .hash = "dev" elif .type == "KSU" then .hash = "main" else .hash end else . end else error("No type found") end)' 2>&1); then
             echo "::error::ksu_options validation failed: $ksu_options_normalized"
@@ -171,6 +174,10 @@ jobs:
           esac
           
           filtered=$(jq -c "$jq_filter" matrix.json)
+          if [ -n "$target_model" ]; then
+            filtered=$(jq -c --arg model "$target_model" 'map(select(.model == $model))' <<<"$filtered")
+            echo "ℹ️  Model filter applied: $target_model"
+          fi
           count=$(jq 'length' <<<"$filtered")
           
           filtered=$(echo "$filtered" | jq '
@@ -456,7 +463,8 @@ jobs:
             cat << 'EOF'
           ## 🎯 Build Plan
           
-          **Target:** ${{ inputs.op_model }}  
+          **Target:** ${{ inputs.op_model }}
+          **Model Filter:** ${{ inputs.target_model || 'all matching models' }}
           **Devices:** ${{ steps.set-matrix.outputs.count }}  
           
           **Configuration:**
