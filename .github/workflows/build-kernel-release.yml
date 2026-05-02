@@ -694,7 +694,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           jq -r '
-            def label:
+            def ksu_label:
               if . == "KSUN" then "KernelSU Next"
               elif . == "KSU" then "KernelSU"
               elif . == "RSKSU" then "ReSukiSU"
@@ -704,7 +704,7 @@ jobs:
 
             .include
             | to_entries[]
-            | "| \(.key + 1) | `\(.value.model)` | `\(.value.os_version)` | `\(.value.android_version)-\(.value.kernel_version)` | `\(.value.ksu_type | label)` | `\(.value.ksu_hash)` | `\(.value.ksu_resolved_hash)` |"
+            | "| \(.key + 1) | `\(.value.model)` | `\(.value.os_version)` | `\(.value.android_version)-\(.value.kernel_version)` | `\(.value.ksu_type | ksu_label)` | `\(.value.ksu_hash)` | `\(.value.ksu_resolved_hash)` |"
           ' <<< "$matrix_json" >> "$GITHUB_STEP_SUMMARY"
 
           {
