@@ -21,7 +21,7 @@ Automated OnePlus kernel builds with KernelSU, KernelSU Next, ReSukiSU, SukiSU U
 
 Flashing custom kernels can brick your device or cause data loss.
 
-Back up your data and stock `boot`, `init_boot`, and/or `vendor_boot` images before flashing.  
+Back up your data and stock `boot`, `init_boot` images before flashing.  
 Only flash builds made for your exact device and OS version.
 
 Use at your own risk.
