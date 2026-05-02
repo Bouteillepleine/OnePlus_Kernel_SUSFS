@@ -133,6 +133,6 @@ Thanks to WildKernels, KernelSU, KernelSU Next, ReSukiSU, SukiSU Ultra, SUSFS, f
 
 <div align="center">
 
-**Flash enjoy!**
+**Flash & enjoy!**
 
 </div>
