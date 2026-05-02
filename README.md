@@ -379,6 +379,6 @@ This fork is based on work from:
 
 <div align="center">
 
-**Built with ❤️ for advanced Android kernel users**
+**Built for advanced Android kernel users**
 
 </div>
