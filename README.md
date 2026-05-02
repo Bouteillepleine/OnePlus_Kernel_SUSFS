@@ -1,7 +1,8 @@
 <div align="center">
 
 # OnePlus ● KernelSU(N) ● SukiSU Ultra ● ReSukiSU ● SUSFS
-# (Wild Fork)
+
+### Wild Fork
 
 Automated OnePlus kernel builds with KernelSU, KernelSU Next, ReSukiSU, SukiSU Ultra, and SUSFS.
 
@@ -20,7 +21,7 @@ Automated OnePlus kernel builds with KernelSU, KernelSU Next, ReSukiSU, SukiSU U
 
 Flashing custom kernels can brick your device or cause data loss.
 
-Back up your data and stock `boot` and `init_boot` images before flashing.  
+Back up your data and stock `boot`, `init_boot`, and/or `vendor_boot` images before flashing.  
 Only flash builds made for your exact device and OS version.
 
 Use at your own risk.
@@ -33,7 +34,7 @@ Use at your own risk.
 - KernelSU Next
 - ReSukiSU
 - SukiSU Ultra
-- SUSFS, where supported
+- SUSFS
 
 ---
 
@@ -115,18 +116,6 @@ Recommended SUSFS module:
 
 ---
 
-## Links
-
-- [WildKernels](https://github.com/WildKernels/OnePlus_KernelSU_SUSFS)
-- [KernelSU](https://github.com/tiann/KernelSU)
-- [KernelSU Next](https://github.com/KernelSU-Next/KernelSU-Next)
-- [ReSukiSU](https://github.com/ReSukiSU/ReSukiSU)
-- [SukiSU Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra)
-- [SUSFS](https://gitlab.com/simonpunk/susfs4ksu)
-- [Kernel Flasher](https://github.com/fatalcoder524/KernelFlasher)
-
----
-
 ## 💝 Donations
 
 Any and all donations are appreciated!
@@ -144,6 +133,6 @@ Thanks to WildKernels, KernelSU, KernelSU Next, ReSukiSU, SukiSU Ultra, SUSFS, f
 
 <div align="center">
 
-**Flash & Enjoy !**
+**Flash enjoy!**
 
 </div>
