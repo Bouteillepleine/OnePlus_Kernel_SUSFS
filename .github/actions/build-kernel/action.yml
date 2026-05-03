@@ -1800,27 +1800,59 @@ runs:
     - name: Add Build based configs
       shell: bash
       run: |
-        set -euo pipefail
-        echo "Add Build based configs"
-        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        set -euo pipefail    
+        echo "Add Build based configs"    
+        DEFCONFIG="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"    
+        
+        cat >> "$DEFCONFIG" <<'EOF'
+        # Build/performance options
         CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE=y
-        CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3=n
+        # CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE_O3 is not set
         CONFIG_OPTIMIZE_INLINING=y
         CONFIG_FRAME_WARN=0
         CONFIG_TRACEPOINTS=y
         CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y        
+        #
+        # Disable heavy debug options
+        #        
         # CONFIG_DEBUG_KERNEL is not set
         # CONFIG_DEBUG_INFO is not set
         # CONFIG_DEBUG_INFO_DWARF4 is not set
-        # CONFIG_LOCK_DEBUGGING is not set
+        # CONFIG_DEBUG_INFO_DWARF5 is not set
+        # CONFIG_DEBUG_INFO_BTF is not set
+        # CONFIG_DEBUG_INFO_BTF_MODULES is not set
+        # CONFIG_GDB_SCRIPTS is not set
+        
+        # CONFIG_KASAN is not set
+        # CONFIG_KASAN_HW_TAGS is not set
+        # CONFIG_KASAN_VMALLOC is not set
+        # CONFIG_KFENCE is not set
+        # CONFIG_UBSAN is not set
+        # CONFIG_UBSAN_TRAP is not set
+        # CONFIG_PAGE_OWNER is not set
+        # CONFIG_PAGE_PINNER is not set
+        # CONFIG_MEM_ALLOC_PROFILING is not set
+        
+        # CONFIG_SCHED_DEBUG is not set
+        # CONFIG_SCHEDSTATS is not set
+        # CONFIG_RCU_TRACE is not set
+        
+        # CONFIG_PROVE_LOCKING is not set
+        # CONFIG_LOCK_STAT is not set
         # CONFIG_DEBUG_MUTEXES is not set
         # CONFIG_DEBUG_SPINLOCK is not set
         # CONFIG_DEBUG_ATOMIC_SLEEP is not set
-        # CONFIG_GDB_SCRIPTS is not set
-        # CONFIG_CFI_CLANG is not set
-        # CONFIG_CFI_PERMISSIVE is not set
-        # CONFIG_CFI_ICALL_NORMALIZE_INTEGERS is not set
-        CONFIG_SHADOW_CALL_STACK=y
+        # CONFIG_DEBUG_RWSEMS is not set
+        # CONFIG_DEBUG_LOCK_ALLOC is not set
+        
+        #
+        # Lightweight hardening
+        #        
+        CONFIG_SECURITY_DMESG_RESTRICT=y
+        CONFIG_SYN_COOKIES=y
+        CONFIG_BPF_UNPRIV_DEFAULT_OFF=y
+        # CONFIG_LEGACY_TIOCSTI is not set
+        
         EOF
 
     - name: Add RUST build configs
