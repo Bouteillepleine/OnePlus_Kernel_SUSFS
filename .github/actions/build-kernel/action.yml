@@ -1808,16 +1808,19 @@ runs:
         CONFIG_OPTIMIZE_INLINING=y
         CONFIG_FRAME_WARN=0
         CONFIG_TRACEPOINTS=y
-        CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
-        CONFIG_OPTIMIZE_INLINING=y         
-        CONFIG_DEBUG_KERNEL=n
-        CONFIG_DEBUG_INFO=n
-        CONFIG_DEBUG_INFO_DWARF4=n
-        CONFIG_LOCK_DEBUGGING=n
-        CONFIG_DEBUG_MUTEXES=n
-        CONFIG_DEBUG_SPINLOCK=n
-        CONFIG_DEBUG_ATOMIC_SLEEP=n
-        CONFIG_GDB_SCRIPTS=n
+        CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y        
+        # CONFIG_DEBUG_KERNEL is not set
+        # CONFIG_DEBUG_INFO is not set
+        # CONFIG_DEBUG_INFO_DWARF4 is not set
+        # CONFIG_LOCK_DEBUGGING is not set
+        # CONFIG_DEBUG_MUTEXES is not set
+        # CONFIG_DEBUG_SPINLOCK is not set
+        # CONFIG_DEBUG_ATOMIC_SLEEP is not set
+        # CONFIG_GDB_SCRIPTS is not set
+        # CONFIG_CFI_CLANG is not set
+        # CONFIG_CFI_PERMISSIVE is not set
+        # CONFIG_CFI_ICALL_NORMALIZE_INTEGERS is not set
+        CONFIG_SHADOW_CALL_STACK=y
         EOF
 
     - name: Add RUST build configs
