@@ -1815,12 +1815,9 @@ runs:
     
         # Debug info reduction
         CONFIG_DEBUG_INFO=n
-        CONFIG_DEBUG_INFO_DWARF4=n
-        CONFIG_DEBUG_INFO_DWARF5=n
-        CONFIG_GDB_SCRIPTS=n
+        CONFIG_DEBUG_INFO_DWARF4=n        
+        CONFIG_GDB_SCRIPTS=n        
         
-        CONFIG_DYNAMIC_DEBUG=n
-        CONFIG_DYNAMIC_DEBUG_CORE=n
         CONFIG_MAGIC_SYSRQ=n
         CONFIG_BOOT_PRINTK_DELAY=n
         CONFIG_DEBUG_SECTION_MISMATCH=n
@@ -1846,9 +1843,7 @@ runs:
         CONFIG_DEBUG_OBJECTS_RCU_HEAD=n
         CONFIG_DEBUG_OBJECTS_PERCPU_COUNTER=n
         
-        CONFIG_SCHED_DEBUG=n               
-        CONFIG_RCU_EQS_DEBUG=n
-        
+        CONFIG_RCU_EQS_DEBUG=n        
         CONFIG_DEBUG_VM=n
         CONFIG_DEBUG_VM_PGFLAGS=n
         CONFIG_DEBUG_VM_RB=n
