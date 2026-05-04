@@ -1813,29 +1813,52 @@ runs:
         CONFIG_TRACEPOINTS=y
         CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
     
-        # Disable debug infrastructure
-        CONFIG_DEBUG_KERNEL=n
+        # Debug info reduction
         CONFIG_DEBUG_INFO=n
         CONFIG_DEBUG_INFO_DWARF4=n
         CONFIG_DEBUG_INFO_DWARF5=n
         CONFIG_GDB_SCRIPTS=n
-    
-        # Disable lock/debug overhead
-        CONFIG_LOCK_DEBUGGING=n
-        CONFIG_DEBUG_MUTEXES=n
-        CONFIG_DEBUG_SPINLOCK=n
-        CONFIG_DEBUG_ATOMIC_SLEEP=n
-        CONFIG_PROVE_LOCKING=n
-        CONFIG_LOCK_STAT=n
-        CONFIG_DEBUG_LOCK_ALLOC=n
-        CONFIG_DEBUG_RWSEMS=n
-    
-        # Disable runtime sanitizers/debug allocators
-        CONFIG_KFENCE=n
-        CONFIG_UBSAN=n
-        CONFIG_UBSAN_TRAP=n     
-    
+        
+        CONFIG_DYNAMIC_DEBUG=n
+        CONFIG_DYNAMIC_DEBUG_CORE=n
+        CONFIG_MAGIC_SYSRQ=n
+        CONFIG_BOOT_PRINTK_DELAY=n
+        CONFIG_DEBUG_SECTION_MISMATCH=n
+                
+        CONFIG_KUNIT_DEBUGFS=n
+        CONFIG_LKDTM=n
+        
+        CONFIG_FAULT_INJECTION=n
+        CONFIG_FAULT_INJECTION_DEBUG_FS=n
+        CONFIG_FAILSLAB=n
+        CONFIG_FAIL_PAGE_ALLOC=n
+        CONFIG_FAIL_MAKE_REQUEST=n
+        CONFIG_FAIL_IO_TIMEOUT=n
+        CONFIG_FAIL_FUTEX=n
+        CONFIG_FAIL_FUNCTION=n
+        CONFIG_FAULT_INJECTION_USERCOPY=n
+        
+        CONFIG_DEBUG_OBJECTS=n
+        CONFIG_DEBUG_OBJECTS_SELFTEST=n
+        CONFIG_DEBUG_OBJECTS_FREE=n
+        CONFIG_DEBUG_OBJECTS_TIMERS=n
+        CONFIG_DEBUG_OBJECTS_WORK=n
+        CONFIG_DEBUG_OBJECTS_RCU_HEAD=n
+        CONFIG_DEBUG_OBJECTS_PERCPU_COUNTER=n
+        
+        CONFIG_SCHED_DEBUG=n               
+        CONFIG_RCU_EQS_DEBUG=n
+        
+        CONFIG_DEBUG_VM=n
+        CONFIG_DEBUG_VM_PGFLAGS=n
+        CONFIG_DEBUG_VM_RB=n
+        CONFIG_DEBUG_VM_MAPLE_TREE=n
+        CONFIG_DEBUG_MEMORY_INIT=n
+        CONFIG_DEBUG_PER_CPU_MAPS=n    
         EOF
+
+        echo "✅ Build based configs applied"
+        echo "::endgroup::"
 
     - name: Add RUST build configs
       shell: bash
