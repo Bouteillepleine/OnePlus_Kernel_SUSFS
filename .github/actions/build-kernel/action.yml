@@ -1811,9 +1811,7 @@ runs:
         CONFIG_OPTIMIZE_INLINING=y
         CONFIG_FRAME_WARN=0
         CONFIG_TRACEPOINTS=y
-        CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
-        CONFIG_SYN_COOKIES=y
-        CONFIG_QRTR=y        
+        CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y            
     
         # Debug info reduction
         CONFIG_DEBUG_INFO=n
