@@ -1812,6 +1812,12 @@ runs:
         CONFIG_FRAME_WARN=0
         CONFIG_TRACEPOINTS=y
         CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
+        CONFIG_SYN_COOKIES=y
+        CONFIG_QRTR=y
+        CONFIG_NET_SCH_CAKE=y
+        CONFIG_BT_BNEP=m
+        CONFIG_RSEQ=y        
+        CONFIG_CGROUP_PIDS=y
     
         # Debug info reduction
         CONFIG_DEBUG_INFO=n
@@ -1849,7 +1855,16 @@ runs:
         CONFIG_DEBUG_VM_RB=n
         CONFIG_DEBUG_VM_MAPLE_TREE=n
         CONFIG_DEBUG_MEMORY_INIT=n
-        CONFIG_DEBUG_PER_CPU_MAPS=n    
+        CONFIG_DEBUG_PER_CPU_MAPS=n
+
+        CONFIG_BLK_DEBUG_FS=n
+        CONFIG_CMA_DEBUGFS=n
+        CONFIG_PTDUMP_STAGE2_DEBUGFS=n
+        CONFIG_NET_SCH_NETEM=n
+        CONFIG_VSOCKETS_DIAG=n
+        CONFIG_BT_DEBUGFS=n
+        CONFIG_NET_SELFTESTS=n
+        CONFIG_NETDEV_ADDR_LIST_TEST=n
         EOF
 
         echo "✅ Build based configs applied"
