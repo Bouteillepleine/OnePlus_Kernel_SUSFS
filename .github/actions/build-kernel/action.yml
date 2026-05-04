@@ -1812,9 +1812,8 @@ runs:
         CONFIG_FRAME_WARN=0
         CONFIG_TRACEPOINTS=y
         CONFIG_WQ_POWER_EFFICIENT_DEFAULT=y
-        CONFIG_SYN_COOKIES=y                
-        CONFIG_RSEQ=y
-        CONFIG_CGROUP_PIDS=y
+        CONFIG_SYN_COOKIES=y
+        CONFIG_QRTR=y        
     
         # Debug info reduction
         CONFIG_DEBUG_INFO=n
