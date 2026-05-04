@@ -1816,8 +1816,7 @@ runs:
         CONFIG_QRTR=y
         CONFIG_NET_SCH_CAKE=y
         CONFIG_BT_BNEP=m
-        CONFIG_RSEQ=y        
-        CONFIG_CGROUP_PIDS=y
+        CONFIG_RSEQ=y
     
         # Debug info reduction
         CONFIG_DEBUG_INFO=n
