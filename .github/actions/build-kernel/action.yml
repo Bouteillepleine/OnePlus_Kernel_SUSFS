@@ -283,13 +283,14 @@ runs:
 
         echo "::endgroup::"
 
-    - name: Add swap for Full LTO builds      
+    - name: Add swap for Full LTO builds
+      if: ${{ env.OP_LTO == 'full' }}
       shell: bash
       run: |
         set -euo pipefail
 
         echo "::group::Add swap for Full LTO"
-        echo "Full LTO detected: OP_LTO=$OP_LTO"
+        echo "Full LTO detected from JSON: OP_LTO=$OP_LTO"
 
         echo "== resources before swap =="
         free -h || true
