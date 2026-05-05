@@ -283,6 +283,84 @@ runs:
 
         echo "::endgroup::"
 
+    - name: Add swap for Full LTO builds      
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        echo "::group::Add swap for Full LTO"
+        echo "Full LTO detected: OP_LTO=$OP_LTO"
+
+        echo "== resources before swap =="
+        free -h || true
+        swapon --show || true
+        df -h / || true
+
+        echo
+        echo "== try zram swap =="
+        sudo modprobe zram || true
+
+        if [ -b /dev/zram0 ]; then
+          if [ -f /sys/block/zram0/comp_algorithm ] &&
+            grep -qw lz4 /sys/block/zram0/comp_algorithm; then
+            echo lz4 | sudo tee /sys/block/zram0/comp_algorithm >/dev/null || true
+          fi
+
+          if echo 8G | sudo tee /sys/block/zram0/disksize >/dev/null &&
+            sudo mkswap /dev/zram0 &&
+            sudo swapon -p 100 /dev/zram0; then
+            echo "✅ zram swap enabled on /dev/zram0"
+          else
+            echo "::warning::zram swap setup failed; continuing with disk swap"
+          fi
+        else
+          echo "zram unavailable; continuing with disk swap"
+        fi
+
+        try_swap() {
+          size="$1"
+          label="$2"
+
+          sudo swapoff /swapfile 2>/dev/null || true
+          sudo rm -f /swapfile
+
+          echo "== creating ${label} disk swap with fallocate =="
+
+          if ! sudo fallocate -l "$size" /swapfile; then
+            echo "::warning::fallocate ${label} swap failed; trying dd"
+            sudo rm -f /swapfile
+
+            if ! sudo dd if=/dev/zero of=/swapfile bs=1M count="$((size / 1024 / 1024))" status=progress; then
+              echo "::warning::dd ${label} swap failed"
+              sudo rm -f /swapfile
+              return 1
+            fi
+          fi
+
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon -p 10 /swapfile
+        }
+
+        if ! try_swap "$((16 * 1024 * 1024 * 1024))" "16G"; then
+          echo "::warning::16G swap setup failed; falling back to 8G"
+
+          if ! try_swap "$((8 * 1024 * 1024 * 1024))" "8G"; then
+            echo "::warning::8G swap setup failed; falling back to 4G"
+            try_swap "$((4 * 1024 * 1024 * 1024))" "4G"
+          fi
+        fi
+
+        sudo sysctl vm.swappiness=60 || true
+
+        echo
+        echo "== resources after swap =="
+        free -h || true
+        swapon --show || true
+        df -h / || true
+
+        echo "::endgroup::"
+
     - name: Setup Base Environment
       shell: bash
       run: |
