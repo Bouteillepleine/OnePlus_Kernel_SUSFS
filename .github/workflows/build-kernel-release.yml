@@ -38,13 +38,13 @@ on:
         default: ''
 
       ksu_options:
-        description: 'Enter KernelSU build json'
+        description: 'Enter ReSukiSU build json'
         required: true
         type: string
-        default: '[{"type":"ksun","hash":"dev"}]'
+        default: '[{"type":"rsksu","hash":"main"}]'
 
       optimize_level:
-        description: "Compiler optimization level"
+        description: 'Compiler optimization level'
         required: true
         type: choice
         options:
@@ -54,6 +54,7 @@ on:
 
       clean_build:
         description: 'Clean build (no ccache)'
+        required: false
         type: boolean
         default: false
 
@@ -70,32 +71,38 @@ on:
         default: false
 
       build_timestamp:
-        description: 'Custom kernel build timestamp for uname -a (e.g. "Tue Feb 10 10:01:02 UTC 2026"). Leave empty for current time.'
+        description: 'Custom kernel build timestamp for uname -a. Leave empty for current time.'
+        required: false
         type: string
         default: ''
 
       android12-5_10_susfs_branch_or_commit:
         description: 'Enter SusFS Branch or commit hash for android12-5.10'
+        required: false
         type: string
         default: ''
 
       android13-5_15_susfs_branch_or_commit:
         description: 'Enter SusFS Branch or commit hash for android13-5.15'
+        required: false
         type: string
         default: ''
 
       android14-6_1_susfs_branch_or_commit:
         description: 'Enter SusFS Branch or commit hash for android14-6.1'
+        required: false
         type: string
         default: ''
 
       android15-6_6_susfs_branch_or_commit:
         description: 'Enter SusFS Branch or commit hash for android15-6.6'
+        required: false
         type: string
         default: ''
 
       android16-6_12_susfs_branch_or_commit:
         description: 'Enter SusFS Branch or commit hash for android16-6.12'
+        required: false
         type: string
         default: ''
 
@@ -136,12 +143,37 @@ jobs:
           target_model="${{ github.event.inputs.op_target_model }}"
           ksu_options_raw='${{ github.event.inputs.ksu_options }}'
 
-          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c 'map(if .type then .type |= ascii_upcase | if .hash == null then if .type == "KSUN" then .hash = "dev" elif .type == "KSU" then .hash = "main" else .hash end else . end else error("No type found") end)' 2>&1); then
+          if ! ksu_options_normalized=$(echo "$ksu_options_raw" | jq -c '
+            map(
+              if .type then
+                .type |= ascii_upcase
+                | if .hash == null or .hash == "" then
+                    if .type == "RSKSU" then
+                      .hash = "main"
+                    else
+                      error("This branch only supports RSKSU. Got: " + .type)
+                    end
+                  else
+                    .
+                  end
+              else
+                error("No type found")
+              end
+            )
+          ' 2>&1); then
             echo "::error::ksu_options validation failed: $ksu_options_normalized"
             exit 1
           fi
 
           echo "ksu_options_normalized=$ksu_options_normalized" >> "$GITHUB_OUTPUT"
+
+          ksu_type=$(echo "$ksu_options_normalized" | jq -r '.[0].type')
+          ksu_ref=$(echo "$ksu_options_normalized" | jq -r '.[0].hash')
+
+          if [ "$ksu_type" != "RSKSU" ]; then
+            echo "::error::This branch only supports RSKSU. Got: $ksu_type"
+            exit 1
+          fi
 
           echo "[" > matrix.json
           mapfile -t all_json_files < <(find configs/ -name "*.json" -print0 | xargs -0 -n1)
@@ -181,7 +213,6 @@ jobs:
             android*-*.*)
               IFS='-' read -r av kv <<< "$input"
 
-              # Build android*-* only for OOS15 and OOS16
               jq_filter="map(select(.os_version == \"OOS15\" or .os_version == \"OOS16\")) | map(select(.android_version == \"$av\" and .kernel_version == \"$kv\"))"
 
               echo "ℹ️  Android-Kernel filter applied: $av-$kv"
@@ -230,7 +261,6 @@ jobs:
 
           echo "$filtered" | jq '.' > matrix.json
 
-          # For each device + each ksu option → one combined entry
           merged_matrix=$(jq -n --argjson devices "$filtered" --argjson ksu_list "$ksu_options_normalized" '
             [
               $devices[] as $dev
@@ -248,16 +278,8 @@ jobs:
 
           echo "count=$count" >> "$GITHUB_OUTPUT"
 
-          ksu_type=$(echo "$ksu_options_normalized" | jq -r '.[0].type')
-          ksu_ref=$(echo "$ksu_options_normalized" | jq -r '.[0].hash')
-
-          if [ "$ksu_type" == "KSUN" ]; then
-            KSU_REPO_OWNER="KernelSU-Next"
-            KSU_REPO_NAME="KernelSU-Next"
-          else
-            KSU_REPO_OWNER="tiann"
-            KSU_REPO_NAME="KernelSU"
-          fi
+          KSU_REPO_OWNER="ReSukiSU"
+          KSU_REPO_NAME="ReSukiSU"
 
           HEAD_REF="refs/heads/${ksu_ref}"
           TAG_REF="refs/tags/${ksu_ref}"
@@ -274,10 +296,16 @@ jobs:
           RETRY_COUNT=0
           RETRY_DELAY=5
 
-          echo "Resolving $ksu_type hash ($ksu_ref)..."
+          echo "Resolving $ksu_type hash ($ksu_ref) from $KSU_REPO_OWNER/$KSU_REPO_NAME..."
 
           until [ $RETRY_COUNT -ge $MAX_RETRIES ]; do
-            RESULT=$(gh api graphql -f query="$QUERY" -f owner="$KSU_REPO_OWNER" -f name="$KSU_REPO_NAME" -f headRef="$HEAD_REF" -f tagRef="$TAG_REF" -f objRef="$ksu_ref" 2>/dev/null)
+            RESULT=$(gh api graphql \
+              -f query="$QUERY" \
+              -f owner="$KSU_REPO_OWNER" \
+              -f name="$KSU_REPO_NAME" \
+              -f headRef="$HEAD_REF" \
+              -f tagRef="$TAG_REF" \
+              -f objRef="$ksu_ref" 2>/dev/null)
             EXIT_CODE=$?
 
             if [ $EXIT_CODE -eq 0 ] && [ -n "$RESULT" ]; then
@@ -309,7 +337,6 @@ jobs:
             map(.ksu_resolved_hash = $resolved_sha)
           ')
 
-          SUSFS_REPO="https://gitlab.com/simonpunk/susfs4ksu.git"
           GITLAB_PROJECT_PATH="simonpunk/susfs4ksu"
 
           declare -A default_branches=(
@@ -477,13 +504,10 @@ jobs:
           ksu_type="${{ fromJSON(steps.set-matrix.outputs.ksu_options_normalized)[0].type }}"
           ksu_ref="${{ fromJSON(steps.set-matrix.outputs.ksu_options_normalized)[0].hash }}"
 
-          ksu_display=""
-          if [ "$ksu_type" = "KSUN" ] || [ "$ksu_type" = "KSU" ]; then
-            if [[ "$ksu_ref" =~ ^[0-9a-f]{40}$ ]]; then
-              ksu_display+="📌 \`$ksu_type\`, \`$ksu_ref\`"
-            else
-              ksu_display+="🔀 \`$ksu_type\`, \`$ksu_ref\` (\`${{ steps.set-matrix.outputs.ksu_resolved_hash }}\`)"
-            fi
+          if [[ "$ksu_ref" =~ ^[0-9a-f]{40}$ ]]; then
+            ksu_display="📌 \`$ksu_type\`, \`$ksu_ref\`"
+          else
+            ksu_display="🔀 \`$ksu_type\`, \`$ksu_ref\` (\`${{ steps.set-matrix.outputs.ksu_resolved_hash }}\`)"
           fi
 
           target_model_input="${{ inputs.op_target_model }}"
@@ -511,7 +535,7 @@ jobs:
           **Configuration:**
           EOF
 
-            echo "- KSU Config: $ksu_display"
+            echo "- ReSukiSU Config: $ksu_display"
             echo "- Target Model: $target_model_display"
             echo "- Build Timestamp: $build_ts_display"
 
@@ -587,8 +611,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.set-op-model.outputs.matrix) }}
     outputs:
-      ksun_ver: ${{ steps.build-stat.outputs.ksu_version }}
-      ksu_ver: ${{ steps.build-stat.outputs.ksu_version }}
+      rsksu_ver: ${{ steps.build-stat.outputs.rsksu_ver }}
     steps:
       - name: 📥 Checkout Code
         uses: actions/checkout@v6
@@ -724,16 +747,8 @@ jobs:
             echo ""
             echo "Outputs:"
             echo "  - Kernel: ${{ steps.build.outputs.kernel_version }}"
-
-            if [ "${{ matrix.ksu_type }}" = "KSUN" ]; then
-              echo "  - KSU Next: v${{ steps.build.outputs.ksu_version }}"
-              echo "ksun_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
-              echo "ksu_ver=" >> "$GITHUB_OUTPUT"
-            else
-              echo "  - KSU: v${{ steps.build.outputs.ksu_version }}"
-              echo "ksun_ver=" >> "$GITHUB_OUTPUT"
-              echo "ksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
-            fi
+            echo "  - ReSukiSU: v${{ steps.build.outputs.ksu_version }}"
+            echo "rsksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
 
             if [ "${{ matrix.susfs }}" = true ]; then
               echo "  - SUSFS: ${{ steps.build.outputs.susfs_version }}"
@@ -779,17 +794,8 @@ jobs:
           | Metric | Value |
           |--------|-------|
           | **Kernel** | ${{ steps.build.outputs.kernel_version }} |
+          | **ReSukiSU** | v${{ steps.build.outputs.ksu_version }} |
           EOF
-
-            if [ "${{ matrix.ksu_type }}" = "KSUN" ]; then
-              cat >> "$GITHUB_STEP_SUMMARY" << EOF
-          | **KSU Next** | v${{ steps.build.outputs.ksu_version }} |
-          EOF
-            else
-              cat >> "$GITHUB_STEP_SUMMARY" << EOF
-          | **KSU** | v${{ steps.build.outputs.ksu_version }} |
-          EOF
-            fi
 
             if [ "${{ matrix.susfs }}" = true ]; then
               cat >> "$GITHUB_STEP_SUMMARY" << EOF
@@ -860,7 +866,7 @@ jobs:
       REPO_NAME: ${{ github.event.repository.name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SUSFS_BASE_VERSION: ${{ needs.set-op-model.outputs.susfs_base_version }}
-      RELEASE_NAME: '*TEST BUILD* OnePlus Kernels With KernelSU Next & SUSFS ${{ needs.set-op-model.outputs.susfs_base_version }} *TEST BUILD*'
+      RELEASE_NAME: '*TEST BUILD* OnePlus Kernels With ReSukiSU & SUSFS ${{ needs.set-op-model.outputs.susfs_base_version }} *TEST BUILD*'
     steps:
       - name: 📥 Checkout code
         uses: actions/checkout@v6
@@ -944,7 +950,7 @@ jobs:
           IFS=',' read -ra active_gki_keys <<< "${{ needs.set-op-model.outputs.active_gki_keys }}"
 
           cat << EOF > release_notes.md
-          # 🎯 OnePlus Kernels with KernelSU Next & SUSFS $SUSFS_BASE_VERSION
+          # 🎯 OnePlus Kernels with ReSukiSU & SUSFS $SUSFS_BASE_VERSION
 
           > **Build Date:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')  
           > **Build ID:** \`${{ github.run_id }}\`  
@@ -1023,16 +1029,6 @@ jobs:
             exit 1
           fi
 
-          cat << EOF >> release_notes.md
-
-          ---
-
-          ## 🔧 Build Configuration
-
-          | Component | Version/Setting |
-          |-----------|----------------|
-          EOF
-
           ksu_display_value() {
             local input="$1"
             local resolved="$2"
@@ -1046,24 +1042,16 @@ jobs:
 
           ksu_display=$(ksu_display_value "$ksu_ref" "$ksu_resolved_hash")
 
-          if [ "$ksu_type" == "KSUN" ]; then
-            cat << EOF >> release_notes.md
-          | **KernelSU Next Branch** | \`$ksu_display\` |
-          | **KernelSU Next Version** | \`$ksu_ver_global\` |
-          EOF
-          elif [ "$ksu_type" == "KSU" ]; then
-            cat << EOF >> release_notes.md
-          | **KernelSU Branch** | \`$ksu_display\` |
-          | **KernelSU Version** | \`$ksu_ver_global\` |
-          EOF
-          else
-            cat << EOF >> release_notes.md
-          | **Unknown KernelSU Fork Branch** | \`\` |
-          | **Unknown KernelSU Fork Version** | \`\` |
-          EOF
-          fi
-
           cat << EOF >> release_notes.md
+
+          ---
+
+          ## 🔧 Build Configuration
+
+          | Component | Version/Setting |
+          |-----------|----------------|
+          | **ReSukiSU Branch** | \`$ksu_display\` |
+          | **ReSukiSU Version** | \`$ksu_ver_global\` |
           | **SUSFS Version** | \`$SUSFS_BASE_VERSION\` |
           | **Optimization Level** | \`$OPTIMIZE_LEVEL\` |
           | **Clean Build** | $( [ "$CLEAN_BUILD" = "true" ] && echo "✅ Yes (no ccache)" || echo "❌ No (ccache enabled)" ) |
@@ -1083,75 +1071,45 @@ jobs:
           ## ✨ Features & Capabilities
 
           ### 🔐 Root Management
-          EOF
-
-          if [ "$ksu_type" == "KSUN" ]; then
-            cat << EOF >> release_notes.md
-          - **KernelSU Next** - Next-generation kernel-level root solution
-          EOF
-          elif [ "$ksu_type" == "KSU" ]; then
-            cat << EOF >> release_notes.md
-          - **KernelSU** - Kernel-level root solution
-          EOF
-          fi
-
-          cat << EOF >> release_notes.md
+          - **ReSukiSU** - Kernel-level root solution based on the KernelSU ecosystem
           - **SUSFS $SUSFS_BASE_VERSION** - Advanced hiding and security features
 
           ### 🛡️ Security & Privacy
           - **Baseband Guard (BBG)** - LSM-based baseband security
           - **SUSFS Hide Features**:
             - ✅ SUS_PATH - Hide suspicious paths
-            - ✅ SUS_MOUNT - Hide mount points (No Cli Support)
+            - ✅ SUS_MOUNT - Hide mount points
             - ✅ SUS_KSTAT - Spoof kernel statistics
             - ✅ SPOOF_UNAME - Kernel version spoofing
             - ✅ SPOOF_CMDLINE - Boot parameters spoofing
             - ✅ OPEN_REDIRECT - File access redirection
             - ✅ SUS_MAP - Memory mapping protection
-            - ✅ AVC_SPOOF - Spoof Procfs avc denial logs
+            - ✅ AVC_SPOOF - Spoof Procfs AVC denial logs
           - **Ptrace Leak Fix** - For kernels < 5.16
-          - **Unicode Fix** - Prevent path traversal and other detections using non-printable Unicode codepoints [Experimental]
+          - **Unicode Fix** - Prevent path traversal and other detections using non-printable Unicode codepoints
 
           ### 🚀 Performance & Networking
           - **BBRv1** - Improved TCP congestion control
           - **Wireguard** - Built-in VPN support
-          - **IP Set & IPv6 NAT Support** - Advanced firewall capabilities and IPv6 NAT Support
-          - **TTL Target Support** - Network packet manipulation
-          - **LTO (Link Time Optimization)** - Optimized binary size and performance
-          - **ccache-accelerated builds** - Faster compilation times
-          - **Optimisation Patches** - Memory, I/O, CPU scheduler, network and other general tunings
+          - **IP Set & IPv6 NAT Support**
+          - **TTL Target Support**
+          - **LTO / ccache build optimizations**
+          - **General optimisation patches**
 
           ### 🔧 System Features
-          - **TMPFS_XATTR** - Extended attributes for tmpfs (Mountify support)
-          - **TMPFS_POSIX_ACL** - POSIX ACLs for tmpfs
-          - **HMBIRD SCX** - Scheduler extensions for all SM8750/MT6991 devices
-          - **Droidspaces** - Support Portable Linux containers to run full Linux environments.
-          - **NTSync** - Provide high-performance, low-latency synchronization primitives compatible with the Windows NT kernel API
+          - **TMPFS_XATTR**
+          - **TMPFS_POSIX_ACL**
+          - **HMBIRD SCX**
+          - **Droidspaces**
+          - **NTSync**
 
           ---
 
           ## 📱 Manager Applications
 
           ### Official Manager
-          EOF
-
-          if [ "$ksu_type" == "KSUN" ]; then
-            cat << EOF >> release_notes.md
-          - **KernelSU Next Manager**  
-            → [GitHub Release](https://github.com/KernelSU-Next/KernelSU-Next/releases)
-          EOF
-          elif [ "$ksu_type" == "KSU" ]; then
-            cat << EOF >> release_notes.md
-          - **KernelSU Manager**  
-            → [GitHub Release](https://github.com/tiann/KernelSU/releases)
-          EOF
-          fi
-
-          cat << EOF >> release_notes.md
-
-          ### Community Managers
-          - **WildKSU Manager**  
-            → [GitHub Release](https://github.com/WildKernels/Wild_KSU/releases)
+          - **ReSukiSU Manager**  
+            → [GitHub Release](https://github.com/ReSukiSU/ReSukiSU/releases)
 
           ### Required Module
           - **KSU SUSFS Module**  
@@ -1174,7 +1132,7 @@ jobs:
           1. Download the correct AnyKernel3 ZIP for your device.
           2. If you previously used another root method, clean it up first.
           3. Flash the ZIP to the active slot using Kernel Flasher.
-          4. Install the matching KernelSU / KernelSU Next Manager APK.
+          4. Install the matching ReSukiSU Manager APK.
           5. Open the manager app.
           6. Reboot the device if required.
 
@@ -1184,18 +1142,16 @@ jobs:
 
           ### This Release
           - Updated SUSFS to $SUSFS_BASE_VERSION.
-          - Added HMBIRD support for all SM8750/MT6991 devices.
+          - Added ReSukiSU support.
+          - Added single-device build targeting with \`op_target_model\`.
           - Improved ccache build system.
-          - Enhanced SUSFS hiding capabilities.
           - Added IP_SET, IPv6 NAT and TTL support.
-          - Added TMPFS_XATTR and TMPFS_POSIX_ACL support for Mountify.
+          - Added TMPFS_XATTR and TMPFS_POSIX_ACL support.
           - Added Ptrace leak fix for kernels < 5.16.
+          - Added Unicode bypass fix.
+          - Added Droidspaces support.
+          - Added NTSync support.
           - Compiler optimizations (${{ inputs.optimize_level }}).
-          - Additional general optimisations.
-          - Wild_KSU Manager support.
-          - Unicode bypass fix.
-          - Droidspaces support.
-          - NTSync support.
 
           ### Previous Releases
           See [Releases Page](${{ github.server_url }}/${{ github.repository }}/releases)
@@ -1204,8 +1160,7 @@ jobs:
 
           ## 🙏 Credits
 
-          - **KernelSU Next Team** - Root solution
-          - **KernelSU Team** - Root solution
+          - **ReSukiSU Team** - Root solution
           - **simonpunk** - SUSFS development
           - **OnePlus** - Kernel source code
           - **Community Contributors** - Testing and feedback
