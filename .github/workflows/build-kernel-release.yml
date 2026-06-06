@@ -1,5 +1,10 @@
 name: Build and Release OnePlus Kernels
 
+run-name: >-
+  ${{ github.event.inputs.op_target_model != '' && github.event.inputs.op_target_model || github.event.inputs.op_model }}
+  • SUKISU
+  • ${{ github.event.inputs.build_timestamp != '' && github.event.inputs.build_timestamp || 'auto timestamp' }}
+
 permissions:
   contents: write
   actions: write
