@@ -1,44 +1,52 @@
-name: 'Build OnePlus Kernel with KernelSU Next'
+name: 'Build OnePlus Kernel with ReSukiSU'
 
 inputs:
   op_config_json:
     description: 'JSON string containing full device config'
     required: true
     type: string
+
   ksu_type:
     description: 'Select KSU Type'
     required: true
     default: RSKSU
+
   ksu_branch_or_hash:
-    description: 'KSU branch or commit hash (empty = auto-detect by ksu_type)'
+    description: 'ReSukiSU branch, tag, or commit hash'
     required: false
     type: string
     default: ""
+
   susfs_commit_hash_or_branch:
-    description: 'SUSFS branch or commit hash (empty = auto-detect by kernel version)'
+    description: 'SUSFS branch or commit hash'
     required: false
     type: string
     default: ""
+
   build_timestamp:
-    description: 'Custom kernel build timestamp shown in uname -a (e.g. "Tue Feb 10 10:01:02 UTC 2026"). Leave empty to use the current build time.'
+    description: 'Custom kernel build timestamp shown in uname -a, e.g. "Tue Feb 10 10:01:02 UTC 2026". Leave empty to use current UTC time.'
     required: false
     type: string
     default: ''
+
   optimize_level:
     description: 'Compiler optimization level (O2 or O3)'
     required: false
     type: string
     default: O2
+
   clean:
     description: 'Force clean build without ccache acceleration'
     required: false
     type: boolean
     default: false
+
   debug:
     description: 'Enable dumping debug related artifacts'
     required: false
     type: boolean
     default: false
+
   github_token:
     description: 'GitHub Token'
     required: true
@@ -47,36 +55,47 @@ outputs:
   kernel_version:
     description: 'Full kernel version string'
     value: ${{ steps.save_metadata.outputs.kernel_version }}
+
   ksu_version:
-    description: 'KernelSU version number'
+    description: 'ReSukiSU version number'
     value: ${{ steps.save_metadata.outputs.ksu_version }}
+
   ksu_type:
     description: 'KernelSU Variant'
     value: ${{ steps.save_metadata.outputs.ksu_type }}
+
   susfs_version:
     description: 'SUSFS version string'
     value: ${{ steps.save_metadata.outputs.susfs_version }}
+
   build_timestamp:
     description: 'Effective kernel build timestamp used in uname -a'
     value: ${{ steps.save_metadata.outputs.build_timestamp }}
+
   image_sha256:
     description: 'SHA256 hash of kernel Image'
     value: ${{ steps.collect_stats.outputs.image_sha256 }}
+
   zip_sha256:
     description: 'SHA256 hash of AnyKernel3 Zip'
     value: ${{ steps.create_zip.outputs.zip_sha256 }}
+
   warnings:
     description: 'Number of compiler warnings'
     value: ${{ steps.collect_stats.outputs.warnings_count }}
+
   build_time:
     description: 'Total build time in seconds'
     value: ${{ steps.collect_stats.outputs.build_time }}
+
   ccache_hit_rate:
     description: 'ccache hit rate percentage'
     value: ${{ steps.ccache_stats.outputs.hit_rate }}
+
   ccache_direct_rate:
     description: 'ccache direct hit rate percentage'
     value: ${{ steps.ccache_stats.outputs.direct_rate }}
+
   zip_name:
     description: 'Name of the generated flashable ZIP'
     value: ${{ steps.create_zip.outputs.zip_name }}
@@ -110,6 +129,18 @@ runs:
         jq -r 'to_entries[] | "OP_\(.key | ascii_upcase)=\(.value)"' /tmp/config.json >> "$GITHUB_ENV"
         echo "Parsed config:"
         jq '.' /tmp/config.json
+
+    - name: Validate KSU Type
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ "${{ inputs.ksu_type }}" != "RSKSU" ]; then
+          echo "::error::This action only supports RSKSU/ReSukiSU. Got: ${{ inputs.ksu_type }}"
+          exit 1
+        fi
+
+        echo "✅ KSU type validated: ${{ inputs.ksu_type }}"
 
     - name: Validate Inputs
       shell: bash
@@ -919,10 +950,12 @@ runs:
           [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$1" ]
         }
         
-        if version_lte "${susfs_version:1}" "1.5.12"; then
-          echo "NEED_HOOKS=true" >> $GITHUB_ENV
+        if [ "${{ inputs.ksu_type }}" = "RSKSU" ]; then
+          echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
+        elif version_lte "${susfs_version:1}" "1.5.12"; then
+          echo "NEED_HOOKS=true" >> "$GITHUB_ENV"
         else
-          echo "NEED_HOOKS=false" >> $GITHUB_ENV
+          echo "NEED_HOOKS=false" >> "$GITHUB_ENV"
         fi
         
         case "$susfs_version" in
@@ -1400,22 +1433,7 @@ runs:
         CONFIG_ANDROID_BINDER_IPC_RUST=m
         CONFIG_RUST=y
         EOF
-
-    - name: Save Build Metadata
-      id: save_metadata
-      shell: bash
-      run: |
-        set -euo pipefail
-        echo "Save Build Metadata"
-        cd "$ARTIFACTS_FOLDER"
-        echo "kernel_version=${{ env.KERNEL_FULL_VER }}" >> "$GITHUB_OUTPUT"
-        echo "ksu_version=${KSUVER:-unknown}" >> "$GITHUB_OUTPUT"
-        echo "ksu_type=${{ inputs.ksu_type }}" >> "$GITHUB_OUTPUT"
-        echo "build_timestamp=${EFFECTIVE_BUILD_TIMESTAMP:-unknown}" >> "$GITHUB_OUTPUT"
-        if [ "${{ env.OP_SUSFS }}" = true ]; then
-          echo "susfs_version=${SUSVER:-unknown}" >> "$GITHUB_OUTPUT"
-        fi
-
+    
     - name: Customize Kernel Branding
       shell: bash
       run: |
@@ -1476,8 +1494,9 @@ runs:
         echo 'ld.lld "$@" --thinlto-cache-dir=$LDCACHE_DIR --thinlto-jobs=$(nproc --all)' >> "$COMMON_KERNEL_FOLDER/ld-wrapper"
         chmod +x "$COMMON_KERNEL_FOLDER/ld-wrapper"
         
-        KERNEL_BUILD_DATE=$(date -u)
+        KERNEL_BUILD_DATE="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
         export SOURCE_DATE_EPOCH=$COMMIT_TIMESTAMP
+        
         if [ -n "${{ inputs.build_timestamp }}" ]; then
           export KBUILD_BUILD_TIMESTAMP="${{ inputs.build_timestamp }}"
           echo "📅 Using custom build timestamp: $KBUILD_BUILD_TIMESTAMP"
@@ -1485,7 +1504,10 @@ runs:
           export KBUILD_BUILD_TIMESTAMP="$KERNEL_BUILD_DATE"
           echo "📅 Using current UTC build timestamp: $KBUILD_BUILD_TIMESTAMP"
         fi
+        
         echo "EFFECTIVE_BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP" >> "$GITHUB_ENV"
+        echo "BUILD_TIMESTAMP=$KBUILD_BUILD_TIMESTAMP" >> "$GITHUB_ENV"
+
         export KBUILD_BUILD_USER="${BUILD_USER:-kernel}"
         export KBUILD_BUILD_HOST="${BUILD_HOST:-kleaf}"
         export KBUILD_BUILD_VERSION=1
@@ -1771,7 +1793,7 @@ runs:
         IMG_SHA256=$(sha256sum "$IMG" | awk '{print $1}')
         BUILD_TIME="${BUILD_TIME:-0}"
         
-        KERNEL_UNAME=$(strings "$IMG" | grep -E 'Linux version.*#' | tail -n1)
+        KERNEL_UNAME="$(strings "$IMG" | grep -E 'Linux version.*#' | tail -n1 || true)"
         echo "Kernel Uname: $KERNEL_UNAME"
         echo "KERNEL_UNAME=$KERNEL_UNAME" >> "$GITHUB_ENV"
         
@@ -1784,6 +1806,42 @@ runs:
         echo "   - Image size: $(numfmt --to=iec-i --suffix=B "$IMG_SIZE")"
         echo "   - SHA256: $IMG_SHA256"
         echo "   - Build time: ${BUILD_TIME}s"
+        echo "::endgroup::"
+
+    - name: Save Build Metadata
+      id: save_metadata
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::Save Build Metadata"
+
+        if [ -n "${EFFECTIVE_BUILD_TIMESTAMP:-}" ]; then
+          final_build_timestamp="$EFFECTIVE_BUILD_TIMESTAMP"
+        elif [ -n "${BUILD_TIMESTAMP:-}" ]; then
+          final_build_timestamp="$BUILD_TIMESTAMP"
+        elif [ -n "${{ inputs.build_timestamp }}" ]; then
+          final_build_timestamp="${{ inputs.build_timestamp }}"
+        else
+          final_build_timestamp="$(date -u '+%a %b %d %H:%M:%S UTC %Y')"
+        fi
+
+        echo "kernel_version=${KERNEL_FULL_VER:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "ksu_version=${KSUVER:-unknown}" >> "$GITHUB_OUTPUT"
+        echo "ksu_type=${{ inputs.ksu_type }}" >> "$GITHUB_OUTPUT"
+        echo "build_timestamp=$final_build_timestamp" >> "$GITHUB_OUTPUT"
+
+        if [ "${OP_SUSFS:-false}" = "true" ]; then
+          echo "susfs_version=${SUSVER:-unknown}" >> "$GITHUB_OUTPUT"
+        else
+          echo "susfs_version=none" >> "$GITHUB_OUTPUT"
+        fi
+
+        echo "✅ Metadata saved:"
+        echo "  Kernel: ${KERNEL_FULL_VER:-unknown}"
+        echo "  ReSukiSU: ${KSUVER:-unknown}"
+        echo "  Type: ${{ inputs.ksu_type }}"
+        echo "  Timestamp: $final_build_timestamp"
+
         echo "::endgroup::"
         
     - name: Download Latest SUSFS Module from CI
@@ -1808,7 +1866,6 @@ runs:
         fi
     
         mkdir -p "$AK3_FOLDER"
-    
         MODULE_PATH="$AK3_FOLDER/$MODULE_NAME"
     
         LATEST_RUN_ID="$(
@@ -1881,7 +1938,6 @@ runs:
             echo "ZIP listing:"
             unzip -l "$MODULE_PATH" | head -n 80 || true
           fi
-    
         else
           echo "::warning::Failed to download artifact"
         fi
@@ -1918,12 +1974,14 @@ runs:
         
         sed -i 's/do.check_boot_version=.*/do.check_boot_version=1/' anykernel.sh
         
-        ZIP_MODEL=$(echo "$OP_MODEL" | sed 's/-[0-9]\+\.[0-9]\+\.[0-9]\+$//')
-        if [ "${{ env.OP_SUSFS }}" = true ]; then
+        ZIP_MODEL="$(echo "$OP_MODEL" | sed 's/-[0-9]\+\.[0-9]\+\.[0-9]\+$//')"
+
+        if [ "${OP_SUSFS:-false}" = "true" ]; then
           ZIP_NAME="AK3_${ZIP_MODEL}_${OP_OS_VERSION}_${KERNEL_FULL_VER}_${{ inputs.ksu_type }}_${KSUVER:-unknown}_SuSFS_${SUSVER:-unknown}.zip"
         else
           ZIP_NAME="AK3_${ZIP_MODEL}_${OP_OS_VERSION}_${KERNEL_FULL_VER}_${{ inputs.ksu_type }}_${KSUVER:-unknown}.zip"
         fi
+
         mkdir -p "$ARTIFACTS_FOLDER"
         
         echo "Creating flashable ZIP: $ZIP_NAME"
@@ -1937,13 +1995,12 @@ runs:
         fi
         
         mv "$ZIP_NAME" "$ARTIFACTS_FOLDER/"
-        
         find "$ARTIFACTS_FOLDER" -maxdepth 1 -type f ! -name "$ZIP_NAME" -delete
         
-        ZIP_SIZE=$(stat -c%s "$ARTIFACTS_FOLDER/$ZIP_NAME")
-        ZIP_SHA256=$(sha256sum "$ARTIFACTS_FOLDER/$ZIP_NAME" | awk '{print $1}')
+        ZIP_SIZE="$(stat -c%s "$ARTIFACTS_FOLDER/$ZIP_NAME")"
+        ZIP_SHA256="$(sha256sum "$ARTIFACTS_FOLDER/$ZIP_NAME" | awk '{print $1}')"
+
         printf 'zip_sha256=%s\n' "$ZIP_SHA256" >> "$GITHUB_OUTPUT"
-        
         echo "zip_name=$ZIP_NAME" >> "$GITHUB_OUTPUT"
         echo "ZIP_NAME=$ZIP_NAME" >> "$GITHUB_ENV"
         
@@ -1958,11 +2015,11 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        
-        # Get commit SHAs with fallback
+
         KSU_SHA="${KSU_COMMIT_SHA:-unknown}"
         SUSFS_SHA="${SUSFS_COMMIT_SHA:-unknown}"
-        
+        FINAL_TIMESTAMP="${EFFECTIVE_BUILD_TIMESTAMP:-${BUILD_TIMESTAMP:-${{ steps.save_metadata.outputs.build_timestamp }}}}"
+
         {
           echo "Model: ${{ env.OP_MODEL }}"
           echo "OS Version: ${{ env.OP_OS_VERSION }}"
@@ -1970,19 +2027,17 @@ runs:
           echo "Kernel base: ${{ env.KERNEL_VER }}"
           echo "Kernel full: ${{ env.KERNEL_FULL_VER }}"
           echo "Kernel Uname: ${{ env.KERNEL_UNAME }}"
+          echo "Build Timestamp: $FINAL_TIMESTAMP"
           echo "Build User: ${{ env.BUILD_USER }}"
           echo "Build Host: ${{ env.BUILD_HOST }}"
-          if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-            echo "KSUN Version: ${KSUVER:-unknown}"
-            echo "KSUN commit SHA: ${KSU_SHA:-unknown}"
-          else
-            echo "KSU Version: ${KSUVER:-unknown}"
-            echo "KSU commit SHA: ${KSU_SHA:-unknown}"
-          fi
-          if [ "${{ env.OP_SUSFS }}" = true ]; then
+          echo "ReSukiSU Version: ${KSUVER:-unknown}"
+          echo "ReSukiSU commit SHA: ${KSU_SHA:-unknown}"
+
+          if [ "${OP_SUSFS:-false}" = "true" ]; then
             echo "SUSFS Version: ${SUSVER:-unknown}"
             echo "SUSFS commit SHA: $SUSFS_SHA"
           fi
+
           echo "Optimization: ${{ inputs.optimize_level }}"
           echo "Clean Build: ${{ inputs.clean }}"
           echo ""
@@ -2001,15 +2056,17 @@ runs:
           echo "Compiler: ${CLANG_VERSION:-unknown}"
           echo "Warnings Count: ${{ steps.collect_stats.outputs.warnings_count }}"
           echo "Build Time: ${{ steps.collect_stats.outputs.build_time }}s"
+
           if [ "${{ inputs.clean }}" == "false" ]; then
             echo "ccache Hit Rate: ${{ steps.ccache_stats.outputs.hit_rate }}"
             echo "ccache Direct Rate: ${{ steps.ccache_stats.outputs.direct_rate }}"
           else
             echo "ccache: Disabled (clean build)"
           fi
+
           echo "Artifact Name: ${{ env.ZIP_NAME }}"
         } | tee summary.txt
-        
+
         {
           echo "### 🎯 Kernel Build Summary"
           echo ""
@@ -2019,34 +2076,27 @@ runs:
           echo "| **OS Version** | ${{ env.OP_OS_VERSION }} |"
           echo "| **Kernel Version** | ${{ steps.save_metadata.outputs.kernel_version }} |"
           echo "| **Kernel Uname** | \`${{ env.KERNEL_UNAME }}\` |"
+          echo "| **Build Timestamp** | \`${FINAL_TIMESTAMP}\` |"
           echo "| **Build User** | ${{ env.BUILD_USER }} |"
           echo "| **Build Host** | ${{ env.BUILD_HOST }} |"
-          if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-            echo "| **KSUN Version** | ${KSUVER:-unknown} |"
-          else
-            echo "| **KSU Version** | ${KSUVER:-unknown} |"
-          fi
-          
+          echo "| **ReSukiSU Version** | ${KSUVER:-unknown} |"
+
           if [ "$KSU_SHA" != "unknown" ]; then
-            if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
-              echo "| **KSUN Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/KernelSU-Next/KernelSU-Next/commit/$KSU_SHA) |"
-            else
-              echo "| **KSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/tiann/KernelSU/commit/$KSU_SHA) |"
-            fi
+            echo "| **ReSukiSU Commit** | [\`${KSU_SHA:0:8}\`](https://github.com/ReSukiSU/ReSukiSU/commit/$KSU_SHA) |"
           else
-            echo "| **KSU Commit** | unknown |"
+            echo "| **ReSukiSU Commit** | unknown |"
           fi
-          
-          if [ "${{ env.OP_SUSFS }}" = true ]; then
+
+          if [ "${OP_SUSFS:-false}" = "true" ]; then
             echo "| **SUSFS Version** | ${SUSVER:-unknown} |"
-            
+
             if [ "$SUSFS_SHA" != "unknown" ]; then
               echo "| **SUSFS Commit** | [\`${SUSFS_SHA:0:8}\`](https://gitlab.com/simonpunk/susfs4ksu/-/commit/$SUSFS_SHA) |"
             else
               echo "| **SUSFS Commit** | unknown |"
             fi
           fi
-          
+
           echo ""
           echo "### 🔧 OnePlus Features"
           echo ""
@@ -2060,7 +2110,7 @@ runs:
           echo "| **Unicode Fix** | ${{ env.OP_UNICODE }} |"
           echo "| **NTSync** | ${{ env.OP_NTSYNC }} |"
           echo "| **Droidspaces** | ${{ env.OP_DS }} |"
-          
+
           echo ""
           echo "### 📊 Build Metrics"
           echo ""
@@ -2069,12 +2119,12 @@ runs:
           echo "| **Optimization** | ${{ inputs.optimize_level }} |"
           echo "| **Clean Build** | ${{ inputs.clean }} |"
           echo "| **Build Time** | ${{ steps.collect_stats.outputs.build_time }}s |"
-          
+
           if [ "${{ inputs.clean }}" == "false" ]; then
             echo "| **ccache Hit Rate** | ${{ steps.ccache_stats.outputs.hit_rate }} |"
             echo "| **ccache Direct Rate** | ${{ steps.ccache_stats.outputs.direct_rate }} |"
           fi
-          
+
           echo "| **Image SHA256** | \`${{ steps.collect_stats.outputs.image_sha256 }}\` |"
           echo "| **Warnings** | ${{ steps.collect_stats.outputs.warnings_count }} |"
           echo "| **Compiler** | \`${CLANG_VERSION:-unknown}\` |"
@@ -2092,7 +2142,7 @@ runs:
         retention-days: 90
 
     - name: Upload Artifacts
-      if: success() && steps.create_zip.conclusion == 'success'
+      if: ${{ success() && steps.create_zip.conclusion == 'success' }}
       uses: actions/upload-artifact@v7
       with:
         name: ${{ env.ZIP_NAME }}
@@ -2102,7 +2152,7 @@ runs:
         retention-days: 90
 
     - name: Upload ccache log
-      if: success() && inputs.debug == 'true' && steps.build_kernel_step.conclusion == 'success'
+      if: ${{ success() && inputs.debug == 'true' && steps.build_kernel_step.conclusion == 'success' }}
       uses: actions/upload-artifact@v7
       with:
         name: "${{ env.OP_MODEL }}_${{ env.OP_OS_VERSION }}_${{ env.KERNEL_FULL_VER }}_ccache.log"
@@ -2113,13 +2163,13 @@ runs:
 
     - name: 📥 Checkout Code
       uses: actions/checkout@v6
-      if: always() && steps.build_kernel_step.conclusion == 'success'
+      if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
       with:
         path: main-source
         fetch-depth: 1
 
     - name: Save ccache cache
-      if: always() && steps.build_kernel_step.conclusion == 'success'
+      if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
       uses: ./action-source/.github/actions/cache/save
       with:
         cache_path: ${{ env.CCACHE_DIR }}
@@ -2131,7 +2181,7 @@ runs:
         compression_level: 6
 
     - name: Save LTO LD cache
-      if: always() && ${{ env.OP_LTO != 'none' }} && steps.build_kernel_step.conclusion == 'success'
+      if: ${{ always() && env.OP_LTO != 'none' && steps.build_kernel_step.conclusion == 'success' }}
       uses: ./action-source/.github/actions/cache/save
       with:
         cache_path: ${{ env.LDCACHE_DIR }}
