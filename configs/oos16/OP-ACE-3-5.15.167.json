@@ -1,4 +1,4 @@
-{
+﻿{
   "model": "OP-ACE-3-5.15.167",
   "soc": "kalama",
   "branch": "wild/sm8550",
@@ -22,5 +22,6 @@
   "ip_set": true,
   "unicode": true,
   "ntsync": true,
-  "uname": "OP-WILD"
+  "uname": "OP-Ultra"
 }
+

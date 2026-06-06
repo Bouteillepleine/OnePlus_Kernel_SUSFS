@@ -1,4 +1,4 @@
-{
+﻿{
   "model": "OP-PAD-MT6983-5.10.209",
   "soc": "dimensity9000",
   "branch": "wild/mt6983",
@@ -22,5 +22,6 @@
   "ip_set": true,
   "unicode": true,
   "ntsync": true,
-  "uname": "OP-WILD"
+  "uname": "OP-Ultra"
 }
+

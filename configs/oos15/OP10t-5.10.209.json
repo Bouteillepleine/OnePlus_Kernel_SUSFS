@@ -1,4 +1,4 @@
-{
+﻿{
   "model": "OP10t-5.10.209",
   "soc": "waipio",
   "branch": "wild/sm8475",
@@ -22,5 +22,6 @@
   "ip_set": true,
   "unicode": true,
   "ntsync": true,
-  "uname": "OP-WILD"
+  "uname": "OP-Ultra"
 }
+
