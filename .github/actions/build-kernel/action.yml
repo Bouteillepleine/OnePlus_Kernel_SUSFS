@@ -616,24 +616,26 @@ runs:
 
         echo "/usr/lib/ccache" >> "$GITHUB_PATH"
 
-        # Remove unsupported/problematic variables from this shell.
-        unset CCACHE_DEPEND || true
-        unset CCACHE_READONLY_DIRECT || true
-        unset CCACHE_COMPRESSION || true
-        unset CCACHE_COMPRESSION_LEVEL || true
-        unset CCACHE_FILE_CLONE || true
-        unset CCACHE_INODE_CACHE || true
+        sanitize_ccache_env() {
+          unset CCACHE_DEPEND || true
+          unset CCACHE_READONLY_DIRECT || true
+          unset CCACHE_COMPRESSION || true
+          unset CCACHE_COMPRESSION_LEVEL || true
+          unset CCACHE_FILE_CLONE || true
+          unset CCACHE_INODE_CACHE || true
 
-        # Use compatible ccache environment names.
-        export CCACHE_COMPILERCHECK=content
-        export CCACHE_COMPRESS=true
-        export CCACHE_COMPRESSLEVEL=3
-        export CCACHE_DIRECT=true
-        export CCACHE_FILECLONE=true
-        export CCACHE_INODECACHE=true
-        export CCACHE_NOREADONLY_DIRECT=true
-        export CCACHE_NOHASHDIR=true
-        export CCACHE_IGNOREOPTIONS="--sysroot*"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_COMPRESS=true
+          export CCACHE_COMPRESSLEVEL=3
+          export CCACHE_DIRECT=true
+          export CCACHE_FILECLONE=true
+          export CCACHE_INODECACHE=true
+          export CCACHE_NOREADONLY_DIRECT=true
+          export CCACHE_NOHASHDIR=true
+          export CCACHE_IGNOREOPTIONS="--sysroot*"
+        }
+
+        sanitize_ccache_env
 
         echo "Active ccache variables:"
         env | sort | grep '^CCACHE_' || true
@@ -653,17 +655,21 @@ runs:
 
         echo ""
         echo "ccache config:"
+        sanitize_ccache_env
         ccache -p || true
 
         if [ -d "$CCACHE_DIR" ] && find "$CCACHE_DIR" -type f -print -quit 2>/dev/null | grep -q .; then
           echo "✅ Restored cache found"
+          sanitize_ccache_env
           ccache -s | head -n 30 || true
           find "$CCACHE_DIR" -type f -exec touch -t "$(date -d "1 day ago" +%Y%m%d%H%M)" {} + || true
         else
           echo "⚠️ No existing cache"
         fi
 
+        sanitize_ccache_env
         ccache -z || true
+
         echo "::endgroup::"
         
     - name: Fetch SusFS and Other Dependencies
@@ -1022,6 +1028,8 @@ runs:
           local target="$1"
           [ -f "$target" ] || return 0
 
+          echo "Fixing SukiSU selinux_hide compatibility in: $target"
+
           sed -i \
             -e 's/^static int security_context_to_sid_with_policy(/int security_context_to_sid_with_policy(/' \
             -e 's/^static int security_sid_to_context_with_policy(/int security_sid_to_context_with_policy(/' \
@@ -1057,8 +1065,18 @@ runs:
             -e 's/\bksu_late_loaded\b/0/g' \
             "$target" || true
 
+          # Fix Clang -Wpointer-bool-conversion warnings:
+          # These symbols are functions in this tree, not nullable function pointers.
+          perl -0pi -e 's/if[ \t]*\([ \t]*security_dump_masked_av_fn[ \t]*\)/if (\&security_dump_masked_av_fn)/g' "$target" || true
+          perl -0pi -e 's/if[ \t]*\([ \t]*context_struct_compute_av_fn[ \t]*\)/if (\&context_struct_compute_av_fn)/g' "$target" || true
+
           if grep -n 'ksu_late_loaded' "$target"; then
             echo "::error::ksu_late_loaded still remains in $target"
+            exit 1
+          fi
+
+          if grep -nE 'if[[:space:]]*\([[:space:]]*(security_dump_masked_av_fn|context_struct_compute_av_fn)[[:space:]]*\)' "$target"; then
+            echo "::error::Pointer-bool warning patterns still remain in $target"
             exit 1
           fi
         }
@@ -1401,6 +1419,11 @@ runs:
             echo "::error::Unused new_fn still exists in drivers/kernelsu/feature/selinux_hide.c"
             exit 1
           fi
+
+          if grep -nE 'if[[:space:]]*\([[:space:]]*(security_dump_masked_av_fn|context_struct_compute_av_fn)[[:space:]]*\)' drivers/kernelsu/feature/selinux_hide.c; then
+            echo "::error::Pointer-bool warning patterns still remain in drivers/kernelsu/feature/selinux_hide.c"
+            exit 1
+          fi
         fi
 
         if [ -f drivers/kernelsu/supercall/dispatch.c ]; then
@@ -1427,7 +1450,8 @@ runs:
           fi
         done
 
-        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
+        {
+          cat <<'EOF'
         CONFIG_KSU_SUSFS=y
         CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
         CONFIG_KSU_SUSFS_SUS_PATH=y
@@ -1445,6 +1469,7 @@ runs:
         CONFIG_KSU_SUSFS_SUS_MAP=y
         CONFIG_KSU_SUSFS_SUS_SU=n
         EOF
+        } | sed 's/^[[:space:]]*//' >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
 
         sed -i '/^CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=/d' "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" || true
         echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=n" >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
@@ -1773,14 +1798,6 @@ runs:
         CUSTOM_LOCALVERSION="-${ANDROID_VER}-${OP_UNAME}"
         echo "CUSTOM_LOCALVERSION=$CUSTOM_LOCALVERSION" >> "$GITHUB_ENV"
 
-    - name: Disable GPUEB
-      shell: bash
-      if: ${{ env.KERNEL_VER == '5.10' && (startsWith(env.OP_SOC, 'dimensity') || startsWith(env.OP_SOC, 'helio')) }}
-      run: |
-        set -euo pipefail
-        echo "Disabling GPUEB for MTK kernel 5.10"
-        sed -i '/obj-y.*gpueb/d' "$COMMON_KERNEL_FOLDER/drivers/gpu/mediatek/Makefile"
-
     - name: Build Kernel
       id: build_kernel_step
       shell: bash
@@ -1863,25 +1880,36 @@ runs:
         export HOSTCC="ccache clang"
         export HOSTCXX="ccache clang++"
 
-        # Remove unsupported/problematic ccache variables from this shell.
-        unset CCACHE_DEPEND || true
-        unset CCACHE_READONLY_DIRECT || true
-        unset CCACHE_COMPRESSION || true
-        unset CCACHE_COMPRESSION_LEVEL || true
-        unset CCACHE_FILE_CLONE || true
-        unset CCACHE_INODE_CACHE || true
+        sanitize_ccache_env() {
+          unset CCACHE_DEPEND || true
+          unset CCACHE_READONLY_DIRECT || true
+          unset CCACHE_COMPRESSION || true
+          unset CCACHE_COMPRESSION_LEVEL || true
+          unset CCACHE_FILE_CLONE || true
+          unset CCACHE_INODE_CACHE || true
 
-        # Use compatible ccache environment names.
-        export CCACHE_COMPILERCHECK=content
-        export CCACHE_COMPRESS=true
-        export CCACHE_COMPRESSLEVEL=3
-        export CCACHE_DIRECT=true
-        export CCACHE_FILECLONE=true
-        export CCACHE_INODECACHE=true
-        export CCACHE_NOREADONLY_DIRECT=true
-        export CCACHE_NOHASHDIR=true
-        export CCACHE_IGNOREOPTIONS="--sysroot*"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_COMPRESS=true
+          export CCACHE_COMPRESSLEVEL=3
+          export CCACHE_DIRECT=true
+          export CCACHE_FILECLONE=true
+          export CCACHE_INODECACHE=true
+          export CCACHE_NOREADONLY_DIRECT=true
+          export CCACHE_NOHASHDIR=true
+          export CCACHE_IGNOREOPTIONS="--sysroot*"
+        }
 
+        sanitize_ccache_env
+
+        if env | grep -q '^CCACHE_DEPEND='; then
+          echo "::error::CCACHE_DEPEND is still set during build"
+          exit 1
+        fi
+
+        if env | grep -q '^CCACHE_READONLY_DIRECT='; then
+          echo "::error::CCACHE_READONLY_DIRECT is still set during build"
+          exit 1
+        fi
 
         OUT=out
         mkdir -p "$OUT"
@@ -1893,22 +1921,26 @@ runs:
         clang --version 2>&1 | head -n1 || true
         echo ""
         echo "ccache configuration:"
+        sanitize_ccache_env
         ccache -p | grep -E "(compression|direct_mode|read_only_direct|readonly_direct|depend|sloppiness|file_clone|inode_cache)" || true
+
         if env | grep -q '^CCACHE_DEPEND='; then
-          echo "::error::CCACHE_DEPEND is still set during build"
+          echo "::error::CCACHE_DEPEND is still set during ccache verification"
           exit 1
         fi
 
         if env | grep -q '^CCACHE_READONLY_DIRECT='; then
-          echo "::error::CCACHE_READONLY_DIRECT is still set during build"
+          echo "::error::CCACHE_READONLY_DIRECT is still set during ccache verification"
           exit 1
         fi
 
         echo ""
         echo "ccache pre-build stats:"
+        sanitize_ccache_env
         ccache -s | head -n 30 || true
         echo "============================================"
 
+        sanitize_ccache_env
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" gki_defconfig
 
         LOCAL_LOCALVERSION="${CUSTOM_LOCALVERSION:--OP-WILD}"
@@ -1969,6 +2001,7 @@ runs:
           scripts/config --file "$OUT/.config" -d "$sym" 2>/dev/null || true
         done
 
+        sanitize_ccache_env
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" olddefconfig
 
         KCFLAGS="$KCFLAGS -Wno-error -pipe ${KCFLAGS_EXTRA}"
@@ -1989,16 +2022,21 @@ runs:
 
         if [ ! -d "$CCACHE_DIR" ] || [ -z "$(find "$CCACHE_DIR" -type f 2>/dev/null | head -n1)" ]; then
           echo "Priming cache with header preprocessing..."
+          sanitize_ccache_env
           make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -C "$COMMON_KERNEL_FOLDER" O="$OUT" headers_install prepare 2>&1 | head -n 20 || true
         fi
+
+        sanitize_ccache_env
 
         BUILD_START="$(date +%s)"
 
         set -o pipefail
 
         if [ "${{ inputs.debug }}" = "true" ]; then
+          sanitize_ccache_env
           make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" Image modules 2>&1 | tee build.log
 
+          sanitize_ccache_env
           make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" INSTALL_MOD_PATH="$OUT/install" modules_install 2>&1 | tee install.log
 
           cp build.log "$DEBUG_ARTIFACTS_FOLDER/build.log"
@@ -2011,6 +2049,7 @@ runs:
             rsync -av "$OUT/install/lib/modules"/*/ "$DEBUG_ARTIFACTS_FOLDER/" || true
           fi
         else
+          sanitize_ccache_env
           make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" Image 2>&1 | tee build.log
         fi
 
@@ -2039,6 +2078,7 @@ runs:
 
         echo ""
         echo "ccache post-build stats:"
+        sanitize_ccache_env
         ccache -s || true
 
         echo "::endgroup::"
@@ -2053,26 +2093,29 @@ runs:
 
         export CCACHE_DIR="${{ env.CCACHE_DIR }}"
 
-        # Remove unsupported/problematic variables from this shell.
-        unset CCACHE_DEPEND || true
-        unset CCACHE_READONLY_DIRECT || true
-        unset CCACHE_COMPRESSION || true
-        unset CCACHE_COMPRESSION_LEVEL || true
-        unset CCACHE_FILE_CLONE || true
-        unset CCACHE_INODE_CACHE || true
+        sanitize_ccache_env() {
+          unset CCACHE_DEPEND || true
+          unset CCACHE_READONLY_DIRECT || true
+          unset CCACHE_COMPRESSION || true
+          unset CCACHE_COMPRESSION_LEVEL || true
+          unset CCACHE_FILE_CLONE || true
+          unset CCACHE_INODE_CACHE || true
 
-        # Use compatible ccache environment names.
-        export CCACHE_COMPILERCHECK=content
-        export CCACHE_COMPRESS=true
-        export CCACHE_COMPRESSLEVEL=3
-        export CCACHE_DIRECT=true
-        export CCACHE_FILECLONE=true
-        export CCACHE_INODECACHE=true
-        export CCACHE_NOREADONLY_DIRECT=true
-        export CCACHE_NOHASHDIR=true
-        export CCACHE_IGNOREOPTIONS="--sysroot*"
+          export CCACHE_COMPILERCHECK=content
+          export CCACHE_COMPRESS=true
+          export CCACHE_COMPRESSLEVEL=3
+          export CCACHE_DIRECT=true
+          export CCACHE_FILECLONE=true
+          export CCACHE_INODECACHE=true
+          export CCACHE_NOREADONLY_DIRECT=true
+          export CCACHE_NOHASHDIR=true
+          export CCACHE_IGNOREOPTIONS="--sysroot*"
+        }
 
+        sanitize_ccache_env
         ccache -c || true
+
+        sanitize_ccache_env
         ccache --evict-older-than 10800s || true
 
         if [ "${{ inputs.debug }}" = "true" ] && [ -f "${{ env.CCACHE_LOGFILE }}" ]; then
@@ -2082,6 +2125,7 @@ runs:
           echo "CCACHE_LOGFILE=$LOG_DIR/$NEW_LOG_NAME" >> "$GITHUB_ENV"
         fi
 
+        sanitize_ccache_env
         STATS="$(ccache -s || true)"
 
         CACHEABLE="$(echo "$STATS" | awk '/Cacheable calls:/ {match($0, /[0-9]+/); print substr($0, RSTART, RLENGTH)}' | head -n1)"
@@ -2105,6 +2149,7 @@ runs:
           echo "## 📊 ccache Statistics"
           echo ""
           echo '```'
+          sanitize_ccache_env
           ccache -s || true
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
