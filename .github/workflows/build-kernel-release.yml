@@ -2,7 +2,7 @@ name: Build and Release OnePlus Kernels
 
 run-name: >-
   ${{ github.event.inputs.op_target_model != '' && github.event.inputs.op_target_model || github.event.inputs.op_model }}
-  • SUKISU
+  • KSU/KSUN
   • ${{ github.event.inputs.build_timestamp != '' && github.event.inputs.build_timestamp || 'auto timestamp' }}
 
 permissions:
@@ -147,13 +147,16 @@ jobs:
             map(
               if .type then
                 .type |= ascii_upcase
-                | if .hash == null or .hash == "" then
+                | if (.type != "KSUN" and .type != "KSU") then
+                    error("Only KSUN or KSU is supported. Got: " + .type)
+                  else
+                    .
+                  end
+                | if (.hash == null or .hash == "") then
                     if .type == "KSUN" then
                       .hash = "dev"
-                    elif .type == "KSU" then
-                      .hash = "main"
                     else
-                      .hash = ""
+                      .hash = "main"
                     end
                   else
                     .
@@ -266,7 +269,7 @@ jobs:
           ksu_type=$(echo "$ksu_options_normalized" | jq -r '.[0].type')
           ksu_ref=$(echo "$ksu_options_normalized" | jq -r '.[0].hash')
 
-          if [ "$ksu_type" == "KSUN" ]; then
+          if [ "$ksu_type" = "KSUN" ]; then
             KSU_REPO_OWNER="KernelSU-Next"
             KSU_REPO_NAME="KernelSU-Next"
           else
@@ -318,7 +321,7 @@ jobs:
 
           resolved_sha=$(echo "$RESULT" | jq -r '.data.repository | (.hb.t.o // .ht.t.o // .ho.o // "unknown")')
 
-          if [ "$resolved_sha" == "unknown" ]; then
+          if [ "$resolved_sha" = "unknown" ]; then
             echo "::error::Ref/Hash '$ksu_ref' does not exist in $KSU_REPO_OWNER/$KSU_REPO_NAME"
             exit 1
           fi
@@ -667,12 +670,12 @@ jobs:
               "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
               "CCACHE_NOHASHDIR=true"
               "CCACHE_IGNOREOPTIONS=--sysroot*"
-              "CCACHE_COMPRESSION=true"
-              "CCACHE_COMPRESSION_LEVEL=3"
+              "CCACHE_COMPRESS=true"
+              "CCACHE_COMPRESSLEVEL=3"
               "CCACHE_DIRECT=true"
-              "CCACHE_FILE_CLONE=true"
-              "CCACHE_INODE_CACHE=true"
-              "CCACHE_IS_KERNEL_COMPILING=true"
+              "CCACHE_NOREADONLY_DIRECT=true"
+              "CCACHE_FILECLONE=true"
+              "CCACHE_INODECACHE=true"
               "CCACHE_UMASK=002"
               "CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime,pch_defines,system_headers,locale"
             )
@@ -682,29 +685,51 @@ jobs:
               echo "$setting" >> "$GITHUB_ENV"
             done
 
-            if [ "${{ inputs.debug }}" == "true" ]; then
-              export "CCACHE_LOGFILE=$CCACHE_LOG"
+            if [ "${{ inputs.debug }}" = "true" ]; then
+              export CCACHE_LOGFILE="$CCACHE_LOG"
               echo "CCACHE_LOGFILE=$CCACHE_LOG" >> "$GITHUB_ENV"
             fi
 
-            if ccache --help 2>&1 | grep -q 'depend_mode'; then
-              export CCACHE_DEPEND=true
-              echo "CCACHE_DEPEND=true" >> "$GITHUB_ENV"
-            fi
-
             echo "✅ ccache configured successfully"
-            ccache -p
+            ccache -p || true
           else
             echo "ccache not found, skipping configuration."
           fi
 
           echo "::endgroup::"
 
-      - name: 🧹 Prepare op_config_json (without KSU fields)
+      - name: 🔍 Verify ccache environment
+        shell: bash
+        run: |
+          echo "::group::ccache env check"
+          set -euo pipefail
+
+          echo "Active CCACHE_* variables:"
+          env | sort | grep '^CCACHE_' || true
+
+          echo ""
+          echo "Checking forbidden/problematic variables..."
+
+          if env | grep -q '^CCACHE_DEPEND='; then
+            echo "::error::CCACHE_DEPEND is still set. Remove it from workflow/action/scripts."
+            exit 1
+          fi
+
+          if env | grep -q '^CCACHE_READONLY_DIRECT='; then
+            echo "::error::CCACHE_READONLY_DIRECT is still set. Use CCACHE_NOREADONLY_DIRECT=true instead."
+            exit 1
+          fi
+
+          echo "✅ No forbidden ccache variables found"
+          ccache -p || true
+
+          echo "::endgroup::"
+
+      - name: 🧹 Prepare op_config_json (without workflow-only fields)
         id: prepare_config
         shell: bash
         run: |
-          echo "config_json=$(jq -nc --argjson m '${{ toJSON(matrix) }}' '$m | del(.ksu_type, .ksu_hash, .ksu_resolved_hash)')" >> "$GITHUB_OUTPUT"
+          echo "config_json=$(jq -nc --argjson m '${{ toJSON(matrix) }}' '$m | del(.ksu_type, .ksu_hash, .ksu_resolved_hash, .susfs_resolved_hash)')" >> "$GITHUB_OUTPUT"
 
       - name: 🔨 Build Kernel
         id: build
@@ -731,7 +756,7 @@ jobs:
           echo "OS Version: ${{ matrix.os_version }}"
           echo "Kernel: ${{ matrix.android_version }}-${{ matrix.kernel_version }}"
 
-          if [ "${{ matrix.susfs }}" = true ]; then
+          if [ "${{ matrix.susfs }}" = "true" ]; then
             echo "SUSFS Hash: ${{ matrix.susfs_resolved_hash }}"
           fi
 
@@ -754,10 +779,11 @@ jobs:
               echo "ksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
             fi
 
-            if [ "${{ matrix.susfs }}" = true ]; then
+            if [ "${{ matrix.susfs }}" = "true" ]; then
               echo "  - SUSFS: ${{ steps.build.outputs.susfs_version }}"
             fi
 
+            echo "  - Build timestamp: ${{ steps.build.outputs.build_timestamp }}"
             echo "  - Build time: ${{ steps.build.outputs.build_time }}s"
 
             if [ "${{ inputs.clean_build }}" != "true" ]; then
@@ -787,7 +813,7 @@ jobs:
           **Kernel:** ${{ matrix.android_version }}-${{ matrix.kernel_version }}
           EOF
 
-          if [ "${{ matrix.susfs }}" = true ]; then
+          if [ "${{ matrix.susfs }}" = "true" ]; then
             cat >> "$GITHUB_STEP_SUMMARY" << EOF
           **SUSFS Hash:** \`${{ matrix.susfs_resolved_hash }}\`
           EOF
@@ -810,7 +836,11 @@ jobs:
           EOF
             fi
 
-            if [ "${{ matrix.susfs }}" = true ]; then
+            cat >> "$GITHUB_STEP_SUMMARY" << EOF
+          | **Build Timestamp** | \`${{ steps.build.outputs.build_timestamp }}\` |
+          EOF
+
+            if [ "${{ matrix.susfs }}" = "true" ]; then
               cat >> "$GITHUB_STEP_SUMMARY" << EOF
           | **SUSFS** | ${{ steps.build.outputs.susfs_version }} |
           EOF
@@ -853,7 +883,7 @@ jobs:
           if command -v ccache >/dev/null 2>&1; then
             echo ""
             echo "📊 ccache statistics after build:"
-            ccache -s
+            ccache -s || true
             echo ""
             echo "💾 ccache preserved for next build"
           fi
@@ -880,7 +910,7 @@ jobs:
       REPO_NAME: ${{ github.event.repository.name }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SUSFS_BASE_VERSION: ${{ needs.set-op-model.outputs.susfs_base_version }}
-      RELEASE_NAME: 'OnePlus Kernels - KernelSU Next + SUSFS ${{ needs.set-op-model.outputs.susfs_base_version }}'
+      RELEASE_NAME: 'OnePlus Kernels - KernelSU / KernelSU Next + SUSFS ${{ needs.set-op-model.outputs.susfs_base_version }}'
 
     steps:
       - name: 📥 Checkout code
@@ -893,15 +923,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          LATEST_MATCHING_TAG=$(gh api repos/$REPO_OWNER/$REPO_NAME/tags \
-            --jq "[.[] | select(.name | startswith(\"${SUSFS_BASE_VERSION}-r\"))] \
-                  | sort_by(.name | split(\"-r\")[1] | tonumber) \
-                  | last | .name // empty")
+          LATEST_MATCHING_TAG="$(
+            {
+              gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/tags?per_page=100" \
+                --jq '.[] | .name' \
+                | grep -E "^${SUSFS_BASE_VERSION}-r[0-9]+$" || true
+            } \
+              | awk -F'-r' 'NF >= 2 {print $0 "\t" $2}' \
+              | sort -k2,2n \
+              | tail -n1 \
+              | cut -f1
+          )"
 
           if [ -z "$LATEST_MATCHING_TAG" ]; then
             NEW_TAG="${SUSFS_BASE_VERSION}-r1"
           else
-            NEW_TAG=$(echo "$LATEST_MATCHING_TAG" | awk -F'-r' '{printf "%s-r%d", $1, $2+1}')
+            NEW_TAG="$(echo "$LATEST_MATCHING_TAG" | awk -F'-r' '{printf "%s-r%d", $1, $2+1}')"
           fi
 
           echo "New tag: $NEW_TAG"
@@ -950,7 +987,7 @@ jobs:
             echo "- Flashing the wrong ZIP may cause bootloop."
             echo "- Back up your current boot/init_boot/vendor_boot before flashing."
             echo "- Use Kernel Flasher or another trusted flashing method."
-            echo "- If switching from Magisk, APatch, KernelSU, or another fork, clean old root leftovers carefully."
+            echo "- If switching from Magisk, APatch, KernelSU, KernelSU Next, or another fork, clean old root leftovers carefully."
             echo ""
             echo "## Quick Guide"
             echo ""
@@ -1031,29 +1068,27 @@ jobs:
           declare -A device_info
 
           for file in $(find downloaded-artifacts -maxdepth 1 -name "*.zip" -type f | sort); do
-            if [ -f "$file" ]; then
-              zipname="$(basename "$file" .zip)"
-              rest="${zipname#AK3_}"
+            zipname="$(basename "$file" .zip)"
+            rest="${zipname#AK3_}"
 
-              IFS='_' read -ra parts <<< "$rest"
+            IFS='_' read -ra parts <<< "$rest"
 
-              model="${parts[0]:-unknown}"
-              os_version="${parts[1]:-unknown}"
-              kernel_version="${parts[2]:-unknown}"
-              ksu_type_asset="${parts[3]:-unknown}"
-              ksu_ver="${parts[4]:-unknown}"
+            model="${parts[0]:-unknown}"
+            os_version="${parts[1]:-unknown}"
+            kernel_version="${parts[2]:-unknown}"
+            ksu_type_asset="${parts[3]:-unknown}"
+            ksu_ver="${parts[4]:-unknown}"
 
-              if [ "${parts[5]:-}" = "SuSFS" ]; then
-                susfs_ver="${parts[6]:-unknown}"
-              else
-                susfs_ver="none"
-              fi
-
-              file_name="$(basename "$file")"
-              full_model="${model}_${os_version}_${kernel_version}"
-
-              device_info["$full_model"]="$model|$os_version|$kernel_version|$ksu_type_asset|$ksu_ver|$susfs_ver|$file_name"
+            if [ "${parts[5]:-}" = "SuSFS" ]; then
+              susfs_ver="${parts[6]:-unknown}"
+            else
+              susfs_ver="none"
             fi
+
+            file_name="$(basename "$file")"
+            full_model="${model}_${os_version}_${kernel_version}"
+
+            device_info["$full_model"]="$model|$os_version|$kernel_version|$ksu_type_asset|$ksu_ver|$susfs_ver|$file_name"
           done
 
           if [ "${#device_info[@]}" -eq 0 ]; then
@@ -1099,12 +1134,8 @@ jobs:
             root_name="KernelSU Next"
             manager_name="KernelSU Next Manager"
             manager_url="https://github.com/KernelSU-Next/KernelSU-Next/releases"
-          elif [ "$ksu_type" = "KSU" ]; then
-            root_name="KernelSU"
-            manager_name="KernelSU Manager"
-            manager_url="https://github.com/tiann/KernelSU/releases"
           else
-            root_name="$ksu_type"
+            root_name="KernelSU"
             manager_name="KernelSU Manager"
             manager_url="https://github.com/tiann/KernelSU/releases"
           fi
@@ -1210,6 +1241,7 @@ jobs:
           ### 🚀 Performance & Networking
 
           - BBR TCP congestion control where enabled
+          - WireGuard support where enabled
           - IP_SET and IPv6 NAT where enabled
           - TTL target support where enabled
           - LTO build optimization
@@ -1277,6 +1309,8 @@ jobs:
           - Added grouped download index.
           - Added SHA256 checksum file.
           - Added direct download links in release notes.
+          - Added single-device build targeting with \`op_target_model\`.
+          - Added workflow run-name timestamp display.
           - Added HMBIRD support where enabled.
           - Improved ccache build system.
           - Added IP_SET, IPv6 NAT, TTL, TMPFS_XATTR, TMPFS_POSIX_ACL where enabled.
@@ -1321,14 +1355,14 @@ jobs:
           set -euo pipefail
 
           echo "Uploading helper files..."
-          gh release upload "${{ env.NEW_TAG }}" 00_DOWNLOADS.md --clobber
-          gh release upload "${{ env.NEW_TAG }}" 00_CHECKSUMS.txt --clobber
+          gh release upload "${{ env.NEW_TAG }}" 00_DOWNLOADS.md --clobber --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}"
+          gh release upload "${{ env.NEW_TAG }}" 00_CHECKSUMS.txt --clobber --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}"
 
           echo "Uploading kernel ZIPs..."
           for file in ./downloaded-artifacts/*.zip; do
             if [ -f "$file" ]; then
               echo "Uploading $file..."
-              gh release upload "${{ env.NEW_TAG }}" "$file" --clobber
+              gh release upload "${{ env.NEW_TAG }}" "$file" --clobber --repo "${{ env.REPO_OWNER }}/${{ env.REPO_NAME }}"
             fi
           done
 
