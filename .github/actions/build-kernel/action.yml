@@ -8,10 +8,8 @@ inputs:
   ksu_type:
     description: 'Select KSU Type'
     required: true
-    type: choice
-    options:
-      - KSUN
-      - KSU
+    type: string
+    default: SUKISU
   ksu_branch_or_hash:
     description: 'KSU branch or commit hash (empty = auto-detect by ksu_type)'
     required: false
@@ -113,6 +111,18 @@ runs:
         jq -r 'to_entries[] | "OP_\(.key | ascii_upcase)=\(.value)"' /tmp/config.json >> "$GITHUB_ENV"
         echo "Parsed config:"
         jq '.' /tmp/config.json
+
+    - name: Validate KSU Type
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        if [ "${{ inputs.ksu_type }}" != "SUKISU" ]; then
+          echo "::error::This action only supports SUKISU/SukiSU Ultra. Got: ${{ inputs.ksu_type }}"
+          exit 1
+        fi
+
+        echo "✅ KSU type validated: ${{ inputs.ksu_type }}"
 
     - name: Validate Inputs
       shell: bash
