@@ -8,9 +8,7 @@ inputs:
   ksu_type:
     description: 'Select KSU Type'
     required: true
-    type: choice
-    options:
-      - RSKSU      
+    default: RSKSU
   ksu_branch_or_hash:
     description: 'KSU branch or commit hash (empty = auto-detect by ksu_type)'
     required: false
