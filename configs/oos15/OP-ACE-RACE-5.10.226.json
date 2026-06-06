@@ -1,4 +1,4 @@
-{
+﻿{
   "model": "OP-ACE-RACE-5.10.226",
   "soc": "dimensity8000",
   "branch": "wild/mt6895",
@@ -22,5 +22,6 @@
   "ip_set": true,
   "unicode": true,
   "ntsync": true,
-  "uname": "OP-WILD"
+  "uname": "OP-Ultra"
 }
+

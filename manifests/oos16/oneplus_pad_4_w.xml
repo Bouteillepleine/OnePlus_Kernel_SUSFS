@@ -2,9 +2,9 @@
 <manifest>
   <remote fetch="https://git.codelinaro.org/clo/la" name="clo-la"/>
   <remote fetch="https://github.com/OnePlusOSS" name="origin"/>
-  <remote fetch="https://github.com/WildKernels" name="wild"/>
+  <remote fetch="https://github.com/Bouteillepleine" name="Bouteillepleine"/>
   <default remote="clo-la" revision="dummy_revision" sync-c="true" sync-tags="false"/>
-  <project remote="wild" name="AnyKernel3" path="AnyKernel3" revision="d1ebdc2002c557ceff9939afc3098eb88916f464"/>
+  <project remote="Bouteillepleine" name="AnyKernel3" path="AnyKernel3" revision="gki-2.0"/>
   
   <project remote="origin" name="android_kernel_common_oneplus_sm8850" path="kernel_platform/common" revision="oneplus/sm8850_b_16.0_pad_4" clone-depth="1">
     <linkfile dest="kernel_platform/.source_date_epoch_dir" src="."/>

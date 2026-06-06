@@ -1,4 +1,4 @@
-{
+﻿{
   "model": "OP-NORD-4-CE-5.15.149",
   "soc": "crow",
   "branch": "wild/sm7550",
@@ -22,5 +22,6 @@
   "ip_set": true,
   "unicode": true,
   "ntsync": true,
-  "uname": "OP-WILD"
+  "uname": "OP-Ultra"
 }
+

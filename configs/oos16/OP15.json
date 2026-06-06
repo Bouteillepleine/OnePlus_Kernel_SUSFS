@@ -1,4 +1,4 @@
-{
+﻿{
   "model": "OP15",
   "soc": "canoe",
   "branch": "wild/sm8850",
@@ -22,5 +22,6 @@
   "ip_set": true,
   "unicode": true,
   "ntsync": true,
-  "uname": "OP-WILD"
+  "uname": "OP-Ultra"
 }
+
