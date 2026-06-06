@@ -291,51 +291,23 @@ runs:
         {
           echo "CCACHE_DIR=$CCACHE_DIR"
           echo "LDCACHE_DIR=$LDCACHE_DIR"
-          echo "CCACHE_LOGFILE=$CCACHE_LOGFILE"
+
+          if [ "${{ inputs.debug }}" = "true" ]; then
+            echo "CCACHE_LOGFILE=$CCACHE_LOGFILE"
+          fi
+
           echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
           echo "CCACHE_MAXSIZE=8G"
-
           echo "CCACHE_COMPILERCHECK=content"
-          echo "CCACHE_COMPRESSION=true"
-          echo "CCACHE_COMPRESSION_LEVEL=3"
+          echo "CCACHE_COMPRESS=true"
+          echo "CCACHE_COMPRESSLEVEL=3"
           echo "CCACHE_DIRECT=true"
-          echo "CCACHE_FILE_CLONE=true"
-          echo "CCACHE_INODE_CACHE=true"
+          echo "CCACHE_FILECLONE=true"
+          echo "CCACHE_INODECACHE=true"
           echo "CCACHE_NOHASHDIR=true"
           echo "CCACHE_IGNOREOPTIONS=--sysroot*"
           echo "CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime"
           echo "CCACHE_NOREADONLY_DIRECT=true"
-
-          echo "CCACHE_COMPRESS="
-          echo "CCACHE_COMPRESSLEVEL="
-          echo "CCACHE_DEPEND="
-          echo "CCACHE_INODECACHE="
-          echo "CCACHE_FILECLONE="
-          echo "CCACHE_READONLY_DIRECT="
-        } >> "$GITHUB_ENV"
-
-    - name: Normalize ccache environment
-      shell: bash
-      run: |
-        set -euo pipefail
-
-        {
-          echo "CCACHE_COMPRESS="
-          echo "CCACHE_COMPRESSLEVEL="
-          echo "CCACHE_DEPEND="
-          echo "CCACHE_INODECACHE="
-          echo "CCACHE_FILECLONE="
-          echo "CCACHE_READONLY_DIRECT="
-
-          echo "CCACHE_COMPILERCHECK=content"
-          echo "CCACHE_COMPRESSION=true"
-          echo "CCACHE_COMPRESSION_LEVEL=3"
-          echo "CCACHE_DIRECT=true"
-          echo "CCACHE_FILE_CLONE=true"
-          echo "CCACHE_INODE_CACHE=true"
-          echo "CCACHE_NOREADONLY_DIRECT=true"
-          echo "CCACHE_NOHASHDIR=true"
-          echo "CCACHE_IGNOREOPTIONS=--sysroot*"
         } >> "$GITHUB_ENV"
 
     - name: Optimize Global Git for Repo Tool
@@ -644,31 +616,54 @@ runs:
 
         echo "/usr/lib/ccache" >> "$GITHUB_PATH"
 
-        unset CCACHE_COMPRESS
-        unset CCACHE_COMPRESSLEVEL
-        unset CCACHE_DEPEND
-        unset CCACHE_INODECACHE
-        unset CCACHE_FILECLONE
-        unset CCACHE_READONLY_DIRECT
+        # Remove unsupported/problematic variables from this shell.
+        unset CCACHE_DEPEND || true
+        unset CCACHE_READONLY_DIRECT || true
+        unset CCACHE_COMPRESSION || true
+        unset CCACHE_COMPRESSION_LEVEL || true
+        unset CCACHE_FILE_CLONE || true
+        unset CCACHE_INODE_CACHE || true
 
-        export CCACHE_COMPRESSION=true
-        export CCACHE_COMPRESSION_LEVEL=3
+        # Use compatible ccache environment names.
+        export CCACHE_COMPILERCHECK=content
+        export CCACHE_COMPRESS=true
+        export CCACHE_COMPRESSLEVEL=3
         export CCACHE_DIRECT=true
-        export CCACHE_FILE_CLONE=true
-        export CCACHE_INODE_CACHE=true
+        export CCACHE_FILECLONE=true
+        export CCACHE_INODECACHE=true
         export CCACHE_NOREADONLY_DIRECT=true
+        export CCACHE_NOHASHDIR=true
+        export CCACHE_IGNOREOPTIONS="--sysroot*"
 
-        ccache -p
+        echo "Active ccache variables:"
+        env | sort | grep '^CCACHE_' || true
+
+        echo ""
+        echo "Checking for forbidden variables..."
+
+        if env | grep -q '^CCACHE_DEPEND='; then
+          echo "::error::CCACHE_DEPEND is still set"
+          exit 1
+        fi
+
+        if env | grep -q '^CCACHE_READONLY_DIRECT='; then
+          echo "::error::CCACHE_READONLY_DIRECT is still set"
+          exit 1
+        fi
+
+        echo ""
+        echo "ccache config:"
+        ccache -p || true
 
         if [ -d "$CCACHE_DIR" ] && find "$CCACHE_DIR" -type f -print -quit 2>/dev/null | grep -q .; then
           echo "✅ Restored cache found"
-          ccache -s | head -n 30
+          ccache -s | head -n 30 || true
           find "$CCACHE_DIR" -type f -exec touch -t "$(date -d "1 day ago" +%Y%m%d%H%M)" {} + || true
         else
           echo "⚠️ No existing cache"
         fi
 
-        ccache -z
+        ccache -z || true
         echo "::endgroup::"
         
     - name: Fetch SusFS and Other Dependencies
@@ -1868,24 +1863,25 @@ runs:
         export HOSTCC="ccache clang"
         export HOSTCXX="ccache clang++"
 
-        # Clean up legacy/incompatible ccache environment variables.
-        unset CCACHE_COMPRESS
-        unset CCACHE_COMPRESSLEVEL
-        unset CCACHE_DEPEND
-        unset CCACHE_INODECACHE
-        unset CCACHE_FILECLONE
-        unset CCACHE_READONLY_DIRECT
+        # Remove unsupported/problematic ccache variables from this shell.
+        unset CCACHE_DEPEND || true
+        unset CCACHE_READONLY_DIRECT || true
+        unset CCACHE_COMPRESSION || true
+        unset CCACHE_COMPRESSION_LEVEL || true
+        unset CCACHE_FILE_CLONE || true
+        unset CCACHE_INODE_CACHE || true
 
-        # Modern ccache variables.
+        # Use compatible ccache environment names.
         export CCACHE_COMPILERCHECK=content
-        export CCACHE_COMPRESSION=true
-        export CCACHE_COMPRESSION_LEVEL=3
+        export CCACHE_COMPRESS=true
+        export CCACHE_COMPRESSLEVEL=3
         export CCACHE_DIRECT=true
-        export CCACHE_FILE_CLONE=true
-        export CCACHE_INODE_CACHE=true
+        export CCACHE_FILECLONE=true
+        export CCACHE_INODECACHE=true
         export CCACHE_NOREADONLY_DIRECT=true
         export CCACHE_NOHASHDIR=true
         export CCACHE_IGNOREOPTIONS="--sysroot*"
+
 
         OUT=out
         mkdir -p "$OUT"
@@ -1898,6 +1894,16 @@ runs:
         echo ""
         echo "ccache configuration:"
         ccache -p | grep -E "(compression|direct_mode|read_only_direct|readonly_direct|depend|sloppiness|file_clone|inode_cache)" || true
+        if env | grep -q '^CCACHE_DEPEND='; then
+          echo "::error::CCACHE_DEPEND is still set during build"
+          exit 1
+        fi
+
+        if env | grep -q '^CCACHE_READONLY_DIRECT='; then
+          echo "::error::CCACHE_READONLY_DIRECT is still set during build"
+          exit 1
+        fi
+
         echo ""
         echo "ccache pre-build stats:"
         ccache -s | head -n 30 || true
@@ -2047,21 +2053,21 @@ runs:
 
         export CCACHE_DIR="${{ env.CCACHE_DIR }}"
 
-        # Clean up legacy/incompatible ccache environment variables.
-        unset CCACHE_COMPRESS
-        unset CCACHE_COMPRESSLEVEL
-        unset CCACHE_DEPEND
-        unset CCACHE_INODECACHE
-        unset CCACHE_FILECLONE
-        unset CCACHE_READONLY_DIRECT
+        # Remove unsupported/problematic variables from this shell.
+        unset CCACHE_DEPEND || true
+        unset CCACHE_READONLY_DIRECT || true
+        unset CCACHE_COMPRESSION || true
+        unset CCACHE_COMPRESSION_LEVEL || true
+        unset CCACHE_FILE_CLONE || true
+        unset CCACHE_INODE_CACHE || true
 
-        # Modern ccache variables.
+        # Use compatible ccache environment names.
         export CCACHE_COMPILERCHECK=content
-        export CCACHE_COMPRESSION=true
-        export CCACHE_COMPRESSION_LEVEL=3
+        export CCACHE_COMPRESS=true
+        export CCACHE_COMPRESSLEVEL=3
         export CCACHE_DIRECT=true
-        export CCACHE_FILE_CLONE=true
-        export CCACHE_INODE_CACHE=true
+        export CCACHE_FILECLONE=true
+        export CCACHE_INODECACHE=true
         export CCACHE_NOREADONLY_DIRECT=true
         export CCACHE_NOHASHDIR=true
         export CCACHE_IGNOREOPTIONS="--sysroot*"
@@ -2503,20 +2509,20 @@ runs:
       run: |
         set -euo pipefail
 
-        unset CCACHE_COMPRESS
-        unset CCACHE_COMPRESSLEVEL
-        unset CCACHE_DEPEND
-        unset CCACHE_INODECACHE
-        unset CCACHE_FILECLONE
-        unset CCACHE_READONLY_DIRECT
+        unset CCACHE_DEPEND || true
+        unset CCACHE_READONLY_DIRECT || true
+        unset CCACHE_COMPRESSION || true
+        unset CCACHE_COMPRESSION_LEVEL || true
+        unset CCACHE_FILE_CLONE || true
+        unset CCACHE_INODE_CACHE || true
 
         {
           echo "CCACHE_COMPILERCHECK=content"
-          echo "CCACHE_COMPRESSION=true"
-          echo "CCACHE_COMPRESSION_LEVEL=3"
+          echo "CCACHE_COMPRESS=true"
+          echo "CCACHE_COMPRESSLEVEL=3"
           echo "CCACHE_DIRECT=true"
-          echo "CCACHE_FILE_CLONE=true"
-          echo "CCACHE_INODE_CACHE=true"
+          echo "CCACHE_FILECLONE=true"
+          echo "CCACHE_INODECACHE=true"
           echo "CCACHE_NOREADONLY_DIRECT=true"
           echo "CCACHE_NOHASHDIR=true"
           echo "CCACHE_IGNOREOPTIONS=--sysroot*"
@@ -2525,13 +2531,6 @@ runs:
     - name: Save ccache cache
       if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
       uses: ./action-source/.github/actions/cache/save
-      env:
-        CCACHE_COMPRESS: ""
-        CCACHE_COMPRESSLEVEL: ""
-        CCACHE_DEPEND: ""
-        CCACHE_INODECACHE: ""
-        CCACHE_FILECLONE: ""
-        CCACHE_READONLY_DIRECT: ""
       with:
         cache_path: ${{ env.CCACHE_DIR }}
         cache_key: SUKISU-v3-${{ env.OP_MODEL }}-${{ env.OP_OS_VERSION }}-${{ env.KERNEL_FULL_VER }}-${{ env.CLANG_VERSION_SHORT }}
