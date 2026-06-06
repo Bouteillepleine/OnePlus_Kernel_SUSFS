@@ -15,13 +15,12 @@
   "disk_cleanup": true,
   "hmbird": false,
   "susfs": true,
-  "ds": true,
-  "bbg": true,
+  "ds": false,
+  "bbg": false,
   "bbr": true,
   "ttl": true,
   "ip_set": true,
   "unicode": true,
-  "ntsync": true,
-  "uname": "OP-Ultra"
+  "ntsync": false,
+  "uname": "5-gb2a876903b49-ab14541642-4k"
 }
-
