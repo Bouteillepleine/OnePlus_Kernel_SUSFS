@@ -1,4 +1,4 @@
-{
+﻿{
   "model": "OP-PAD-LITE",
   "soc": "helio_g99",
   "branch": "wild/mt6789",
@@ -22,5 +22,6 @@
   "ip_set": true,
   "unicode": true,
   "ntsync": true,
-  "uname": "OP-WILD"
+  "uname": "OP-Ultra"
 }
+

@@ -1,4 +1,4 @@
-{
+﻿{
   "model": "OP13r-6.1.118",
   "soc": "pineapple",
   "branch": "wild/sm8650",
@@ -22,5 +22,6 @@
   "ip_set": true,
   "unicode": true,
   "ntsync": true,
-  "uname": "OP-WILD"
+  "uname": "OP-Ultra"
 }
+

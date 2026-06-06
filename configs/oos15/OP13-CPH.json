@@ -1,4 +1,4 @@
-{
+﻿{
   "model": "OP13-CPH",
   "soc": "sun",
   "branch": "wild/sm8750",
@@ -22,5 +22,6 @@
   "ip_set": true,
   "unicode": true,
   "ntsync": true,
-  "uname": "OP-WILD"
+  "uname": "OP-Ultra"
 }
+
