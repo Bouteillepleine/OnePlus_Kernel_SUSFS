@@ -304,7 +304,6 @@ runs:
           echo "CCACHE_NOHASHDIR=true"
           echo "CCACHE_IGNOREOPTIONS=--sysroot*"
           echo "CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime"
-
           echo "CCACHE_NOREADONLY_DIRECT=true"
 
           echo "CCACHE_COMPRESS="
