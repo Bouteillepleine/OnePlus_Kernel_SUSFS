@@ -70,13 +70,13 @@ on:
         default: false
 
       mirror_toolchains:
-        description: 'Do you want to sync toolchains before build? [99% runs not required]'
+        description: 'Do you want to sync toolchains before build? [runs required for the 1st run]'
         required: false
         type: boolean
         default: false
 
       build_timestamp:
-        description: 'Custom kernel build timestamp for uname -a. Leave empty for current UTC time.'
+        description: 'Custom kernel build timestamp ie (Tue Feb 10 10:01:02 UTC 2026). Leave empty for current UTC time.'
         required: false
         type: string
         default: ''
