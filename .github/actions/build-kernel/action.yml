@@ -2350,35 +2350,35 @@ runs:
         SUSFS_SHA="${SUSFS_COMMIT_SHA:-unknown}"
 
         {
-          echo "Model: $OP_MODEL"
-          echo "OS Version: $OP_OS_VERSION"
-          echo "Android: $ANDROID_VER"
-          echo "Kernel base: $KERNEL_VER"
-          echo "Kernel full: $KERNEL_FULL_VER"
+          echo "Model: ${OP_MODEL:-unknown}"
+          echo "OS Version: ${OP_OS_VERSION:-unknown}"
+          echo "Android: ${ANDROID_VER:-unknown}"
+          echo "Kernel base: ${KERNEL_VER:-unknown}"
+          echo "Kernel full: ${KERNEL_FULL_VER:-unknown}"
           echo "Kernel Uname: ${KERNEL_UNAME:-unknown}"
-          echo "Build User: $BUILD_USER"
-          echo "Build Host: $BUILD_HOST"
+          echo "Build User: ${BUILD_USER:-unknown}"
+          echo "Build Host: ${BUILD_HOST:-unknown}"
           echo "Build Timestamp: ${EFFECTIVE_BUILD_TIMESTAMP:-${BUILD_TIMESTAMP:-unknown}}"
           echo "SukiSU Ultra Version: ${KSUVER:-unknown}"
           echo "SukiSU Ultra commit SHA: ${KSU_SHA:-unknown}"
 
-          if [ "$OP_SUSFS" = "true" ]; then
+          if [ "${OP_SUSFS:-false}" = "true" ]; then
             echo "SUSFS Version: ${SUSVER:-unknown}"
-            echo "SUSFS commit SHA: $SUSFS_SHA"
+            echo "SUSFS commit SHA: ${SUSFS_SHA:-unknown}"
           fi
 
           echo "Optimization: ${{ inputs.optimize_level }}"
           echo "Clean Build: ${{ inputs.clean }}"
           echo ""
           echo "=== OnePlus Features ==="
-          echo "BBR: $OP_BBR"
-          echo "BBG: $OP_BBG"
-          echo "HMBIRD SCX: $OP_HMBIRD"
-          echo "TTL: $OP_TTL"
-          echo "IP_SET & IPv6 NAT: $OP_IP_SET"
-          echo "Unicode Fix: $OP_UNICODE"
-          echo "NTSync: $OP_NTSYNC"
-          echo "Droidspaces: $OP_DS"
+          echo "BBR: ${OP_BBR:-false}"
+          echo "BBG: ${OP_BBG:-false}"
+          echo "HMBIRD SCX: ${OP_HMBIRD:-false}"
+          echo "TTL: ${OP_TTL:-false}"
+          echo "IP_SET & IPv6 NAT: ${OP_IP_SET:-false}"
+          echo "Unicode Fix: ${OP_UNICODE:-false}"
+          echo "NTSync: ${OP_NTSYNC:-false}"
+          echo "Droidspaces: ${OP_DS:-false}"
           echo ""
           echo "Image SHA256: ${{ steps.collect_stats.outputs.image_sha256 }}"
           echo "AnyKernel3 ZIP SHA256: ${{ steps.create_zip.outputs.zip_sha256 }}"
@@ -2401,12 +2401,12 @@ runs:
           echo ""
           echo "| Metric | Value |"
           echo "|--------|-------|"
-          echo "| **Model** | $OP_MODEL |"
-          echo "| **OS Version** | $OP_OS_VERSION |"
+          echo "| **Model** | ${OP_MODEL:-unknown} |"
+          echo "| **OS Version** | ${OP_OS_VERSION:-unknown} |"
           echo "| **Kernel Version** | ${{ steps.save_metadata.outputs.kernel_version }} |"
           echo "| **Kernel Uname** | \`${KERNEL_UNAME:-unknown}\` |"
-          echo "| **Build User** | $BUILD_USER |"
-          echo "| **Build Host** | $BUILD_HOST |"
+          echo "| **Build User** | ${BUILD_USER:-unknown} |"
+          echo "| **Build Host** | ${BUILD_HOST:-unknown} |"
           echo "| **Build Timestamp** | \`${EFFECTIVE_BUILD_TIMESTAMP:-${BUILD_TIMESTAMP:-unknown}}\` |"
           echo "| **SukiSU Ultra Version** | ${KSUVER:-unknown} |"
 
@@ -2416,7 +2416,7 @@ runs:
             echo "| **SukiSU Ultra Commit** | unknown |"
           fi
 
-          if [ "$OP_SUSFS" = "true" ]; then
+          if [ "${OP_SUSFS:-false}" = "true" ]; then
             echo "| **SUSFS Version** | ${SUSVER:-unknown} |"
 
             if [ "$SUSFS_SHA" != "unknown" ]; then
@@ -2431,14 +2431,14 @@ runs:
           echo ""
           echo "| Feature | Status |"
           echo "|---------|--------|"
-          echo "| **BBR** | $OP_BBR |"
-          echo "| **BBG** | $OP_BBG |"
-          echo "| **HMBIRD SCX** | $OP_HMBIRD |"
-          echo "| **TTL** | $OP_TTL |"
-          echo "| **IP_SET & IPv6 NAT** | $OP_IP_SET |"
-          echo "| **Unicode Fix** | $OP_UNICODE |"
-          echo "| **NTSync** | $OP_NTSYNC |"
-          echo "| **Droidspaces** | $OP_DS |"
+          echo "| **BBR** | ${OP_BBR:-false} |"
+          echo "| **BBG** | ${OP_BBG:-false} |"
+          echo "| **HMBIRD SCX** | ${OP_HMBIRD:-false} |"
+          echo "| **TTL** | ${OP_TTL:-false} |"
+          echo "| **IP_SET & IPv6 NAT** | ${OP_IP_SET:-false} |"
+          echo "| **Unicode Fix** | ${OP_UNICODE:-false} |"
+          echo "| **NTSync** | ${OP_NTSYNC:-false} |"
+          echo "| **Droidspaces** | ${OP_DS:-false} |"
 
           echo ""
           echo "### 📊 Build Metrics"
@@ -2497,9 +2497,41 @@ runs:
         path: main-source
         fetch-depth: 1
 
+    - name: Normalize ccache before saving
+      if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        unset CCACHE_COMPRESS
+        unset CCACHE_COMPRESSLEVEL
+        unset CCACHE_DEPEND
+        unset CCACHE_INODECACHE
+        unset CCACHE_FILECLONE
+        unset CCACHE_READONLY_DIRECT
+
+        {
+          echo "CCACHE_COMPILERCHECK=content"
+          echo "CCACHE_COMPRESSION=true"
+          echo "CCACHE_COMPRESSION_LEVEL=3"
+          echo "CCACHE_DIRECT=true"
+          echo "CCACHE_FILE_CLONE=true"
+          echo "CCACHE_INODE_CACHE=true"
+          echo "CCACHE_NOREADONLY_DIRECT=true"
+          echo "CCACHE_NOHASHDIR=true"
+          echo "CCACHE_IGNOREOPTIONS=--sysroot*"
+        } >> "$GITHUB_ENV"
+
     - name: Save ccache cache
       if: ${{ always() && steps.build_kernel_step.conclusion == 'success' }}
       uses: ./action-source/.github/actions/cache/save
+      env:
+        CCACHE_COMPRESS: ""
+        CCACHE_COMPRESSLEVEL: ""
+        CCACHE_DEPEND: ""
+        CCACHE_INODECACHE: ""
+        CCACHE_FILECLONE: ""
+        CCACHE_READONLY_DIRECT: ""
       with:
         cache_path: ${{ env.CCACHE_DIR }}
         cache_key: SUKISU-v3-${{ env.OP_MODEL }}-${{ env.OP_OS_VERSION }}-${{ env.KERNEL_FULL_VER }}-${{ env.CLANG_VERSION_SHORT }}
