@@ -616,12 +616,26 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Install ccache with ECS"
-          curl -LfsS --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 --tcp-fastopen -H "User-Agent: Mozilla/5.0" \
-            "https://github.com/WildKernels/kernel_patches/raw/refs/heads/main/ccache/ccache-x86-64" -o ccache
+
+          curl -LfsS \
+            --retry 5 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --tcp-fastopen \
+            -H "User-Agent: Mozilla/5.0" \
+            "https://github.com/WildKernels/kernel_patches/raw/refs/heads/main/ccache/ccache-x86-64" \
+            -o ccache
+
+          chmod +x ./ccache
           sudo cp -f ./ccache /usr/bin/ccache
           sudo chmod +x /usr/bin/ccache
           rm -f ./ccache
-          echo "[DEBUG] Ccache version : $(ccache --version)"
+
+          echo "[DEBUG] ccache path: $(command -v ccache)"
+          echo "[DEBUG] ccache version:"
+          ccache --version || true
+
           echo "::endgroup::"
 
       - name: ♻️ Configure ccache & LTO cache (bounded)
@@ -641,17 +655,29 @@ jobs:
             SETTINGS=(
               "CCACHE_DIR=$CACHE_DIR"
               "LDCACHE_DIR=$LDCACHE_DIR"
+
+              # Size / identity
               "CCACHE_MAXSIZE=12G"
               "CCACHE_COMPILERCHECK=content"
               "CCACHE_BASEDIR=${GITHUB_WORKSPACE}"
+
+              # Path handling
               "CCACHE_NOHASHDIR=true"
               "CCACHE_IGNOREOPTIONS=--sysroot*"
-              "CCACHE_COMPRESSION=true"
-              "CCACHE_COMPRESSION_LEVEL=3"
+
+              # Compression - compatible naming
+              "CCACHE_COMPRESS=true"
+              "CCACHE_COMPRESSLEVEL=3"
+
+              # Direct mode
               "CCACHE_DIRECT=true"
-              "CCACHE_FILE_CLONE=true"
-              "CCACHE_INODE_CACHE=true"
-              "CCACHE_IS_KERNEL_COMPILING=true"
+              "CCACHE_NOREADONLY_DIRECT=true"
+
+              # Filesystem optimizations - compatible naming
+              "CCACHE_FILECLONE=true"
+              "CCACHE_INODECACHE=true"
+
+              # Kernel/build tuning
               "CCACHE_UMASK=002"
               "CCACHE_SLOPPINESS=file_macro,time_macros,include_file_mtime,include_file_ctime,pch_defines,system_headers,locale"
             )
@@ -662,20 +688,53 @@ jobs:
             done
 
             if [ "${{ inputs.debug }}" = "true" ]; then
-              export "CCACHE_LOGFILE=$CCACHE_LOG"
+              export CCACHE_LOGFILE="$CCACHE_LOG"
               echo "CCACHE_LOGFILE=$CCACHE_LOG" >> "$GITHUB_ENV"
             fi
 
-            if ccache --help 2>&1 | grep -q 'depend_mode'; then
-              export CCACHE_DEPEND=true
-              echo "CCACHE_DEPEND=true" >> "$GITHUB_ENV"
-            fi
-
             echo "✅ ccache configured successfully"
-            ccache -p
+            echo ""
+            echo "ccache binary:"
+            command -v ccache || true
+            echo ""
+            echo "ccache version:"
+            ccache --version || true
+            echo ""
+            echo "ccache config:"
+            ccache -p || true
           else
             echo "ccache not found, skipping configuration."
           fi
+
+          echo "::endgroup::"
+
+      - name: 🔍 Verify ccache environment
+        shell: bash
+        run: |
+          echo "::group::ccache env check"
+          set -euo pipefail
+
+          echo "Active CCACHE_* variables:"
+          env | sort | grep '^CCACHE_' || true
+
+          echo ""
+          echo "Checking forbidden/problematic variables..."
+
+          if env | grep -q '^CCACHE_DEPEND='; then
+            echo "::error::CCACHE_DEPEND is still set. Remove it from workflow/action/scripts."
+            exit 1
+          fi
+
+          if env | grep -q '^CCACHE_READONLY_DIRECT='; then
+            echo "::error::CCACHE_READONLY_DIRECT is still set. Use CCACHE_NOREADONLY_DIRECT=true instead."
+            exit 1
+          fi
+
+          echo "✅ No forbidden ccache variables found"
+
+          echo ""
+          echo "ccache final config:"
+          ccache -p || true
 
           echo "::endgroup::"
 
@@ -817,7 +876,7 @@ jobs:
           if command -v ccache >/dev/null 2>&1; then
             echo ""
             echo "📊 ccache statistics after build:"
-            ccache -s
+            ccache -s || true
             echo ""
             echo "💾 ccache preserved for next build"
           fi
