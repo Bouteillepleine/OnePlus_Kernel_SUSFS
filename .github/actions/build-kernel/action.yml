@@ -886,8 +886,10 @@ runs:
 
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_KSU=y
-        CONFIG_KPM=n
-        EOF
+        CONFIG_KPM=n        
+        CONFIG_KSU_MULTI_MANAGER_SUPPORT=y
+        CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-⚡Ultra⚡@SukiSU"
+        EOF        
 
         {
           echo "SUKISU"
