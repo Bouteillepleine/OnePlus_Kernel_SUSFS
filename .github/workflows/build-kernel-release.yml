@@ -1,5 +1,10 @@
 name: Build and Release OnePlus Kernels
 
+run-name: >-
+  ${{ github.event.inputs.op_target_model != '' && github.event.inputs.op_target_model || github.event.inputs.op_model }}
+  • RSKSU
+  • ${{ github.event.inputs.build_timestamp != '' && github.event.inputs.build_timestamp || 'auto timestamp' }}
+
 permissions:
   contents: write
   actions: write
@@ -71,7 +76,7 @@ on:
         default: false
 
       build_timestamp:
-        description: 'Custom kernel build timestamp for uname -a. Leave empty for current time.'
+        description: 'Custom kernel build timestamp for uname -a. Leave empty for current UTC time.'
         required: false
         type: string
         default: ''
@@ -212,9 +217,7 @@ jobs:
               ;;
             android*-*.*)
               IFS='-' read -r av kv <<< "$input"
-
               jq_filter="map(select(.os_version == \"OOS15\" or .os_version == \"OOS16\")) | map(select(.android_version == \"$av\" and .kernel_version == \"$kv\"))"
-
               echo "ℹ️  Android-Kernel filter applied: $av-$kv"
               echo "   Restricted to: OOS15 and OOS16 only"
               ;;
@@ -519,7 +522,7 @@ jobs:
 
           build_ts_input="${{ inputs.build_timestamp }}"
           if [ -z "$build_ts_input" ]; then
-            build_ts_display="⏱️ auto (current build time)"
+            build_ts_display="⏱️ auto (current UTC build time)"
           else
             build_ts_display="📌 \`$build_ts_input\`"
           fi
@@ -696,7 +699,6 @@ jobs:
             fi
 
             echo "✅ ccache configured successfully"
-            echo "Current ccache configuration:"
             ccache -p
           else
             echo "ccache not found, skipping configuration."
@@ -704,11 +706,11 @@ jobs:
 
           echo "::endgroup::"
 
-      - name: 🧹 Prepare op_config_json (without KSU fields)
+      - name: 🧹 Prepare op_config_json (without workflow-only fields)
         id: prepare_config
         shell: bash
         run: |
-          echo "config_json=$(jq -nc --argjson m '${{ toJSON(matrix) }}' '$m | del(.ksu_type, .ksu_hash, .ksu_resolved_hash)')" >> "$GITHUB_OUTPUT"
+          echo "config_json=$(jq -nc --argjson m '${{ toJSON(matrix) }}' '$m | del(.ksu_type, .ksu_hash, .ksu_resolved_hash, .susfs_resolved_hash)')" >> "$GITHUB_OUTPUT"
 
       - name: 🔨 Build Kernel
         id: build
@@ -716,7 +718,7 @@ jobs:
         with:
           op_config_json: ${{ steps.prepare_config.outputs.config_json }}
           ksu_type: ${{ matrix.ksu_type }}
-          ksu_branch_or_hash: ${{ matrix.ksu_resolved_hash }}
+          ksu_branch_or_hash: ${{ matrix.ksu_hash }}
           susfs_commit_hash_or_branch: ${{ matrix.susfs_resolved_hash }}
           optimize_level: ${{ inputs.optimize_level }}
           build_timestamp: ${{ inputs.build_timestamp }}
@@ -734,6 +736,7 @@ jobs:
           echo "Device: ${{ matrix.model }}"
           echo "OS Version: ${{ matrix.os_version }}"
           echo "Kernel: ${{ matrix.android_version }}-${{ matrix.kernel_version }}"
+          echo "Timestamp: ${{ steps.build.outputs.build_timestamp }}"
 
           if [ "${{ matrix.susfs }}" = true ]; then
             echo "SUSFS Hash: ${{ matrix.susfs_resolved_hash }}"
@@ -748,6 +751,7 @@ jobs:
             echo "Outputs:"
             echo "  - Kernel: ${{ steps.build.outputs.kernel_version }}"
             echo "  - ReSukiSU: v${{ steps.build.outputs.ksu_version }}"
+            echo "  - Timestamp: ${{ steps.build.outputs.build_timestamp }}"
             echo "rsksu_ver=${{ steps.build.outputs.ksu_version }}" >> "$GITHUB_OUTPUT"
 
             if [ "${{ matrix.susfs }}" = true ]; then
@@ -780,7 +784,8 @@ jobs:
 
           ### ${{ matrix.model }} (${{ matrix.os_version }}) - ${{ job.status == 'success' && '✅ Success' || '❌ Failed' }}
 
-          **Kernel:** ${{ matrix.android_version }}-${{ matrix.kernel_version }}
+          **Kernel:** ${{ matrix.android_version }}-${{ matrix.kernel_version }}  
+          **Timestamp:** \`${{ steps.build.outputs.build_timestamp }}\`
           EOF
 
           if [ "${{ matrix.susfs }}" = true ]; then
@@ -791,10 +796,12 @@ jobs:
 
           if [ "${{ steps.build.outcome }}" = "success" ]; then
             cat >> "$GITHUB_STEP_SUMMARY" << EOF
+
           | Metric | Value |
           |--------|-------|
           | **Kernel** | ${{ steps.build.outputs.kernel_version }} |
           | **ReSukiSU** | v${{ steps.build.outputs.ksu_version }} |
+          | **Build Timestamp** | \`${{ steps.build.outputs.build_timestamp }}\` |
           EOF
 
             if [ "${{ matrix.susfs }}" = true ]; then
@@ -938,6 +945,7 @@ jobs:
 
           OPTIMIZE_LEVEL="${{ inputs.optimize_level }}"
           CLEAN_BUILD="${{ inputs.clean_build }}"
+          BUILD_TIMESTAMP_INPUT="${{ inputs.build_timestamp }}"
 
           declare -A susfs_map=(
             ["android12-5.10"]="${{ needs.set-op-model.outputs.susfs_hash_android12_5_10 }}"
@@ -979,7 +987,6 @@ jobs:
             features=()
 
             if [[ -z "$feature_flags" ]]; then
-              echo "Warning: No JSON entry found for model: $model" >&2
               features_str="N/A"
             else
               IFS=$'\t' read -r hmbird susfs bbr bbg ttl ip_set unicode ds ntsync <<< "$feature_flags"
@@ -1055,6 +1062,7 @@ jobs:
           | **SUSFS Version** | \`$SUSFS_BASE_VERSION\` |
           | **Optimization Level** | \`$OPTIMIZE_LEVEL\` |
           | **Clean Build** | $( [ "$CLEAN_BUILD" = "true" ] && echo "✅ Yes (no ccache)" || echo "❌ No (ccache enabled)" ) |
+          | **Build Timestamp Input** | \`${BUILD_TIMESTAMP_INPUT:-auto}\` |
           | **Compiler** | Clang (version varies by device) |
 
           ### 📌 SUSFS Branch Mapping
@@ -1144,6 +1152,8 @@ jobs:
           - Updated SUSFS to $SUSFS_BASE_VERSION.
           - Added ReSukiSU support.
           - Added single-device build targeting with \`op_target_model\`.
+          - Added workflow run-name timestamp display.
+          - Fixed build timestamp output propagation.
           - Improved ccache build system.
           - Added IP_SET, IPv6 NAT and TTL support.
           - Added TMPFS_XATTR and TMPFS_POSIX_ACL support.
