@@ -645,16 +645,22 @@ jobs:
           CUSTOM_CCACHE_URLS=(
             "https://raw.githubusercontent.com/WildKernels/kernel_patches/main/ccache/ccache-x86-64"
             "https://github.com/WildKernels/kernel_patches/raw/main/ccache/ccache-x86-64"
+            "https://github.com/WildKernels/kernel_patches/raw/refs/heads/main/ccache/ccache-x86-64"
           )
 
-          TMP_CCACHE="$(mktemp)"
+          TMP_DIR="$(mktemp -d)"
+          TMP_CCACHE="$TMP_DIR/ccache"
           CUSTOM_CCACHE_OK=false
+
+          cleanup() {
+            rm -rf "$TMP_DIR" || true
+          }
+          trap cleanup EXIT
 
           for url in "${CUSTOM_CCACHE_URLS[@]}"; do
             echo "Trying custom ccache URL: $url"
 
             rm -f "$TMP_CCACHE"
-            TMP_CCACHE="$(mktemp)"
 
             if curl -LfsS \
               --retry 8 \
@@ -663,6 +669,7 @@ jobs:
               --retry-all-errors \
               --connect-timeout 30 \
               --max-time 300 \
+              --tcp-fastopen \
               -H "User-Agent: Mozilla/5.0" \
               -H "Accept: application/octet-stream,*/*" \
               "$url" \
@@ -673,6 +680,8 @@ jobs:
                 continue
               fi
 
+              chmod +x "$TMP_CCACHE"
+
               echo "Downloaded file type:"
               file "$TMP_CCACHE" || true
 
@@ -681,9 +690,8 @@ jobs:
                 continue
               fi
 
-              chmod +x "$TMP_CCACHE"
-
-              if "$TMP_CCACHE" --version >/dev/null 2>&1; then
+              echo "Testing custom ccache binary:"
+              if "$TMP_CCACHE" --version; then
                 echo "✅ Custom ECS ccache binary is valid"
                 sudo install -m 0755 "$TMP_CCACHE" /usr/bin/ccache
                 CUSTOM_CCACHE_OK=true
@@ -697,8 +705,6 @@ jobs:
 
             sleep 3
           done
-
-          rm -f "$TMP_CCACHE" || true
 
           if [ "$CUSTOM_CCACHE_OK" != "true" ]; then
             echo "::warning::Custom ECS ccache unavailable. Falling back to apt/system ccache."
