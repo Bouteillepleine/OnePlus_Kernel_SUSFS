@@ -641,11 +641,84 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::Install ccache with ECS"
-          curl -LfsS --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 --tcp-fastopen -H "User-Agent: Mozilla/5.0" "https://github.com/WildKernels/kernel_patches/raw/refs/heads/main/ccache/ccache-x86-64" -o ccache
-          sudo cp -f ./ccache /usr/bin/ccache
-          sudo chmod +x /usr/bin/ccache
-          rm -f ./ccache
-          echo "[DEBUG] Ccache version : $(ccache --version)"
+
+          CUSTOM_CCACHE_URLS=(
+            "https://raw.githubusercontent.com/WildKernels/kernel_patches/main/ccache/ccache-x86-64"
+            "https://github.com/WildKernels/kernel_patches/raw/main/ccache/ccache-x86-64"
+          )
+
+          TMP_CCACHE="$(mktemp)"
+          CUSTOM_CCACHE_OK=false
+
+          for url in "${CUSTOM_CCACHE_URLS[@]}"; do
+            echo "Trying custom ccache URL: $url"
+
+            rm -f "$TMP_CCACHE"
+            TMP_CCACHE="$(mktemp)"
+
+            if curl -LfsS \
+              --retry 8 \
+              --retry-delay 10 \
+              --retry-max-time 300 \
+              --retry-all-errors \
+              --connect-timeout 30 \
+              --max-time 300 \
+              -H "User-Agent: Mozilla/5.0" \
+              -H "Accept: application/octet-stream,*/*" \
+              "$url" \
+              -o "$TMP_CCACHE"; then
+
+              if [ ! -s "$TMP_CCACHE" ]; then
+                echo "::warning::Downloaded custom ccache is empty from $url"
+                continue
+              fi
+
+              echo "Downloaded file type:"
+              file "$TMP_CCACHE" || true
+
+              if ! file "$TMP_CCACHE" | grep -qiE 'ELF|executable'; then
+                echo "::warning::Downloaded file is not an executable binary from $url"
+                continue
+              fi
+
+              chmod +x "$TMP_CCACHE"
+
+              if "$TMP_CCACHE" --version >/dev/null 2>&1; then
+                echo "✅ Custom ECS ccache binary is valid"
+                sudo install -m 0755 "$TMP_CCACHE" /usr/bin/ccache
+                CUSTOM_CCACHE_OK=true
+                break
+              else
+                echo "::warning::Downloaded custom ccache failed --version from $url"
+              fi
+            else
+              echo "::warning::Failed to download custom ccache from $url"
+            fi
+
+            sleep 3
+          done
+
+          rm -f "$TMP_CCACHE" || true
+
+          if [ "$CUSTOM_CCACHE_OK" != "true" ]; then
+            echo "::warning::Custom ECS ccache unavailable. Falling back to apt/system ccache."
+
+            if ! command -v ccache >/dev/null 2>&1 || ! ccache --version >/dev/null 2>&1; then
+              echo "System ccache not found or invalid. Installing via apt..."
+              sudo apt-get -o Acquire::Retries=3 update -qq
+              sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ccache
+            fi
+          fi
+
+          if ! command -v ccache >/dev/null 2>&1 || ! ccache --version >/dev/null 2>&1; then
+            echo "::error::ccache is still unavailable after fallback"
+            exit 1
+          fi
+
+          echo "[DEBUG] ccache path: $(command -v ccache)"
+          echo "[DEBUG] ccache version:"
+          ccache --version || true
+
           echo "::endgroup::"
 
       - name: ♻️ Configure ccache & LTO cache (bounded)
