@@ -825,7 +825,7 @@ runs:
           local url="$1"
           local branch="${2:-main}"
           local depth="${3:-1}"
-          local dir="$(basename "$url" .git)"
+          local dir="${4:-$(basename "$url" .git)}"
           local max_attempts=3
           local attempt=1
           
@@ -854,6 +854,10 @@ runs:
         }
         
         retry_clone "https://github.com/WildKernels/kernel_patches.git" "main" "1"
+        
+        if [ "${{ env.OP_BBR3 }}" = true ]; then
+          retry_clone "https://github.com/Bouteillepleine/kernel_patches.git" "main" "1" "bouton_kernel_patches"
+        fi
         
         if [ "${{ env.OP_SUSFS }}" = true ]; then
           echo "Using SUSFS branch/commit: $SUSFS_BRANCH"
