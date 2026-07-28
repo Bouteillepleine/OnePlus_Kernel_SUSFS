@@ -825,7 +825,7 @@ runs:
           local url="$1"
           local branch="${2:-main}"
           local depth="${3:-1}"
-          local dir="$(basename "$url" .git)"
+          local dir="${4:-$(basename "$url" .git)}"
           local max_attempts=3
           local attempt=1
           
@@ -854,6 +854,9 @@ runs:
         }
         
         retry_clone "https://github.com/WildKernels/kernel_patches.git" "main" "1"
+        retry_clone "https://github.com/Bouteillepleine/kernel_patches.git" "main" "1" "bouton_kernel_patches"
+        echo "BOUTEILLE_KERNEL_PATCHES_FOLDER=$GITHUB_WORKSPACE/bouton_kernel_patches" >> "$GITHUB_ENV"
+        echo "BOUTEILLE_BBR3_PATCHES_FOLDER=$GITHUB_WORKSPACE/bouton_kernel_patches/common/bbrv3" >> "$GITHUB_ENV"
         
         if [ "${{ env.OP_SUSFS }}" = true ]; then
           echo "Using SUSFS branch/commit: $SUSFS_BRANCH"
@@ -1598,20 +1601,73 @@ runs:
         set -euo pipefail
         echo "::group::Apply BBRv3 patches"
         cd "$COMMON_KERNEL_FOLDER"
+
         cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_TCP_CONG_ADVANCED=y
         CONFIG_TCP_CONG_BBR3=y
         EOF
-        patch -p1 < "$KERNEL_PATCHES_FOLDER/common/bbrv3/0001-net-tcp-backport-BBRv3-to-$ANDROID_VER-$KERNEL_VER.patch"
-        
-        if [ "${{ env.ANDROID_VER }}" = "android12" ] && [ "${{ env.KERNEL_VER }}" = "5.10" ]; then
-          if ! grep -qF 'int proc_dou8vec_minmax(' ./include/linux/sysctl.h; then
-            patch -p1 < "$KERNEL_PATCHES_FOLDER/common/bbrv3/sysctl_add_proc_dou8vec_minmax.patch"
-            patch -p1 < "$KERNEL_PATCHES_FOLDER/common/bbrv3/sysctl_fix_data-races_in_proc_dou8vec_minmax.patch"
-          fi
+
+        BBR3_DIR="${BOUTEILLE_BBR3_PATCHES_FOLDER:-$GITHUB_WORKSPACE/bouton_kernel_patches/common/bbrv3}"
+
+        if [ ! -d "$BBR3_DIR" ]; then
+          echo "::error::Bouteillepleine BBRv3 patch directory not found: $BBR3_DIR"
+          exit 1
         fi
-        
-        echo "✅ BBRv3 patches applied"
+
+        MAIN_PATCH="$BBR3_DIR/0001-net-tcp-backport-BBRv3-to-$ANDROID_VER-$KERNEL_VER.patch"
+        DEBUGFS_PATCH="$BBR3_DIR/0002-net-tcp-bbr3-add-debugfs-diagnostics-and-runtime-tunables.patch"
+
+        if [ ! -f "$MAIN_PATCH" ]; then
+          echo "::error::BBRv3 patch not found for $ANDROID_VER-$KERNEL_VER"
+          echo "Expected: $MAIN_PATCH"
+          echo ""
+          echo "Available BBRv3 patches:"
+          find "$BBR3_DIR" -maxdepth 1 -type f -name "*.patch" -print | sort
+          exit 1
+        fi
+
+        echo "Using BBRv3 source: Bouteillepleine/kernel_patches"
+        echo "Patch directory: $BBR3_DIR"
+        echo "Applying main patch: $(basename "$MAIN_PATCH")"
+        patch -p1 < "$MAIN_PATCH"
+
+        if [ "$ANDROID_VER" = "android16" ] && [ "$KERNEL_VER" = "6.12" ]; then
+          if [ ! -f "$DEBUGFS_PATCH" ]; then
+            echo "::error::Required BBRv3 debugfs/tunables patch missing for android16-6.12"
+            echo "Expected: $DEBUGFS_PATCH"
+            exit 1
+          fi
+
+          echo "Applying 6.12-only debugfs/tunables patch: $(basename "$DEBUGFS_PATCH")"
+          patch -p1 < "$DEBUGFS_PATCH"
+        else
+          echo "Skipping debugfs/tunables patch for $ANDROID_VER-$KERNEL_VER"
+        fi
+
+        # The BBRv3 backport calls proc_dou8vec_minmax() in sysctl_net_ipv4.c but
+        # never declares it - it does not touch include/linux/sysctl.h. The helper
+        # only landed upstream in 5.12, so on 5.10 trees that predate the stable
+        # backport the build dies with "use of undeclared identifier". Supply it,
+        # but only when genuinely absent: newer 5.10.y already carries it and the
+        # patch would fail as already-applied.
+        if ! grep -qF 'int proc_dou8vec_minmax(' ./include/linux/sysctl.h; then
+          echo "proc_dou8vec_minmax() missing from this tree - applying sysctl backports"
+          for p in sysctl_add_proc_dou8vec_minmax.patch \
+                   sysctl_fix_data-races_in_proc_dou8vec_minmax.patch; do
+            if [ ! -f "$BBR3_DIR/$p" ]; then
+              # Fail here rather than 20 minutes later in a confusing compile error.
+              echo "::error::BBRv3 needs $p but it is missing from $BBR3_DIR"
+              echo "Without it, $ANDROID_VER-$KERNEL_VER cannot compile BBRv3."
+              exit 1
+            fi
+            echo "Applying $p"
+            patch -p1 < "$BBR3_DIR/$p"
+          done
+        else
+          echo "proc_dou8vec_minmax() already present - skipping sysctl backports"
+        fi
+
+        echo "✅ BBRv3 patches applied from Bouteillepleine/kernel_patches"
         echo "::endgroup::"
 
     - name: Enable Important Net Schedulers (qdisc)
@@ -1989,7 +2045,16 @@ runs:
         
         case "$OP_BRANCH" in
           wild/sm8750|wild/sm8850|wild/sm8845)
-            KCFLAGS_EXTRA="-mcpu=oryon-1 ${KCFLAGS_EXTRA}"
+            # -mcpu=oryon-1 needs LLVM >= 19.1 (llvm-project#91022, merged May 2024).
+            # The tree-declared toolchains (build.config.constants: r536225 on 6.12,
+            # r510928 on 6.6) predate it and hard-error on it, so probe before adding.
+            if "${CLANG_BIN_PATH}/clang" --target=aarch64-linux-gnu -mcpu=oryon-1 \
+                 -x c -c -o /dev/null /dev/null >/dev/null 2>&1; then
+              KCFLAGS_EXTRA="-mcpu=oryon-1 ${KCFLAGS_EXTRA}"
+              echo "✅ clang accepts -mcpu=oryon-1"
+            else
+              echo "::warning::clang does not accept -mcpu=oryon-1; building without it"
+            fi
             ;;
         esac
         
@@ -2006,7 +2071,57 @@ runs:
         esac
         
         
+        # AutoFDO. Only enabled on branches whose ABI-neutrality we have actually measured
+        # (Module.symvers byte-identical vs the same build without AFDO):
+        #   wild/sm8850  6.12 / LTO=none  0 of 18673 CRCs changed
+        #   wild/sm8750  6.6  / LTO=thin  0 of 16824 CRCs changed
+        # wild/sm8845 is the same Oryon/Qualcomm family and 6.12 tree, so it is included.
+        # Everything else builds exactly as before -- deliberately opt-in per branch.
+        #
+        # Profile path differs by version:
+        #   6.12 -> gki/aarch64/afdo/kernel.afdo         (CONFIG_AUTOFDO_CLANG=y already in gki_defconfig)
+        #   6.6  -> android/gki/aarch64/afdo/kernel.afdo (opt-in; tree ships autofdo_gki.fragment)
+        # scripts/Makefile.autofdo is pulled in via "include-$(CONFIG_AUTOFDO_CLANG)", so on 6.6
+        # CLANG_AUTOFDO_PROFILE is silently ignored unless we set the symbol ourselves. Set it
+        # here so the olddefconfig below validates it.
+        AFDO_ARGS=()
+        AFDO_PROFILE=""
+        case "$OP_BRANCH" in
+          wild/sm8850|wild/sm8845|wild/sm8750) afdo_allowed=1 ;;
+          *)                                   afdo_allowed=0 ;;
+        esac
+        if [ "$afdo_allowed" = 1 ]; then
+          afdo_candidates=(
+            "$COMMON_KERNEL_FOLDER/gki/aarch64/afdo/kernel.afdo"
+            "$COMMON_KERNEL_FOLDER/android/gki/aarch64/afdo/kernel.afdo"
+          )
+          for afdo_p in "${afdo_candidates[@]}"; do
+            if [ -f "$afdo_p" ]; then
+              AFDO_PROFILE="$afdo_p"
+              scripts/config --file "$OUT/.config" -e AUTOFDO_CLANG
+              echo "✅ AFDO profile: $afdo_p"
+              break
+            fi
+          done
+        fi
+
         make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" O="$OUT" olddefconfig
+
+        # AUTOFDO_CLANG has Kconfig deps (CC_IS_CLANG, CLANG_VERSION >= 170000). If unmet,
+        # olddefconfig drops it silently and the profile would be ignored. Only pass the profile
+        # if the symbol actually survived, so we never report AFDO we did not get.
+        if [ "$afdo_allowed" != 1 ]; then
+          echo "AutoFDO not enabled for $OP_BRANCH (not verified on this branch)"
+        elif [ -n "$AFDO_PROFILE" ]; then
+          if grep -q '^CONFIG_AUTOFDO_CLANG=y$' "$OUT/.config"; then
+            AFDO_ARGS=(CLANG_AUTOFDO_PROFILE="$AFDO_PROFILE")
+            echo "✅ AutoFDO enabled (CONFIG_AUTOFDO_CLANG=y)"
+          else
+            echo "::warning::AFDO profile found but CONFIG_AUTOFDO_CLANG did not stick; building without AutoFDO"
+          fi
+        else
+          echo "::warning::No AFDO profile in tree; building without AutoFDO"
+        fi
         
         KCFLAGS="$KCFLAGS -Wno-error -pipe ${KCFLAGS_EXTRA}"
         KCPPFLAGS="$KCPPFLAGS -DCONFIG_OPTIMIZE_INLINING"
@@ -2041,8 +2156,8 @@ runs:
         set -o pipefail
         
         if [ "${{ inputs.debug }}" == "true" ]; then
-          make V=1 LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" CONFIG_FAKE_DISABLE="$CONFIG_FAKE_DISABLE" Image modules 2>&1 | tee build.log
-          make V=1 LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$COMMON_KERNEL_FOLDER/out" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" CONFIG_FAKE_DISABLE="$CONFIG_FAKE_DISABLE" INSTALL_MOD_PATH="$COMMON_KERNEL_FOLDER/out/install" modules_install 2>&1 | tee install.log
+          make V=1 LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" CONFIG_FAKE_DISABLE="$CONFIG_FAKE_DISABLE" "${AFDO_ARGS[@]}" Image modules 2>&1 | tee build.log
+          make V=1 LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$COMMON_KERNEL_FOLDER/out" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" CONFIG_FAKE_DISABLE="$CONFIG_FAKE_DISABLE" "${AFDO_ARGS[@]}" INSTALL_MOD_PATH="$COMMON_KERNEL_FOLDER/out/install" modules_install 2>&1 | tee install.log
           
           cp build.log "$DEBUG_ARTIFACTS_FOLDER/build.log"
           cp install.log "$DEBUG_ARTIFACTS_FOLDER/install.log"
@@ -2053,7 +2168,7 @@ runs:
           
           ls -la "$DEBUG_ARTIFACTS_FOLDER"
         else
-          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" CONFIG_FAKE_DISABLE="$CONFIG_FAKE_DISABLE" Image 2>&1 | tee build.log
+          make LD="$COMMON_KERNEL_FOLDER/ld-wrapper" HOSTLD="$COMMON_KERNEL_FOLDER/ld-wrapper" -j"$(nproc --all)" O="$OUT" KCFLAGS="$KCFLAGS" KCPPFLAGS="$KCPPFLAGS" CONFIG_FAKE_DISABLE="$CONFIG_FAKE_DISABLE" "${AFDO_ARGS[@]}" Image 2>&1 | tee build.log
         fi
         
         BUILD_END=$(date +%s)
