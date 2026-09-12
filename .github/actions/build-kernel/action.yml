@@ -1257,8 +1257,8 @@ runs:
         
         # SusFS 2.3.0's android12-5.10 patch declares susfs_sus_kstat_spoof_vfs_statfs()
         # below the function that calls it, which trips -Werror=implicit-function-declaration.
-        statfs_use=$(grep -n 'susfs_sus_kstat_spoof_vfs_statfs(' ./fs/statfs.c | head -n1 | cut -d: -f1)
-        statfs_decl=$(grep -n '^extern int susfs_sus_kstat_spoof_vfs_statfs' ./fs/statfs.c | head -n1 | cut -d: -f1)
+        statfs_use=$(grep -n 'susfs_sus_kstat_spoof_vfs_statfs(' ./fs/statfs.c | head -n1 | cut -d: -f1 || true)
+        statfs_decl=$(grep -n '^extern int susfs_sus_kstat_spoof_vfs_statfs' ./fs/statfs.c | head -n1 | cut -d: -f1 || true)
         if [ -n "$statfs_use" ] && [ -n "$statfs_decl" ] && [ "$statfs_decl" -gt "$statfs_use" ]; then
           echo "Hoisting the susfs_sus_kstat_spoof_vfs_statfs() declaration above its first use"
           cat > /tmp/susfs_statfs_proto.h <<'PROTO'
