@@ -911,8 +911,6 @@ runs:
         cd "$KERNEL_PLATFORM_FOLDER"
         echo "Adding KernelSU Next..."
         KSU_INPUT="${{ inputs.ksu_branch_or_hash }}"
-        # setup.sh with no ref checks out the latest tag, which is far behind the
-        # tree the SusFS fix patches are cut against. Pin one that they apply to.
         if [ -z "$KSU_INPUT" ] && [ "${{ env.OP_SUSFS }}" = true ]; then
           KSU_INPUT="76dbebf42f4a9efe275377b4ad0127d16e0729bd"
         fi
@@ -941,8 +939,6 @@ runs:
         
         if [[ "$KSU_VERSION" -gt 33095 ]] && [[ "${{ env.KERNEL_VER }}" == "6.12" ]]; then
           sed -i 's|ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include|ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include -I$(KSU_KERNEL_DIR)/include/uapi|' Kbuild
-          # $(src) means different things across kbuild versions, and 6.12 gets it wrong
-          # here. Point KSU_KERNEL_DIR at the directory Kbuild itself lives in instead.
           sed -i 's|^KSU_KERNEL_DIR := $(srctree)/$(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' Kbuild
           sed -i 's|^KSU_KERNEL_DIR := $(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' Kbuild
         fi
@@ -996,8 +992,6 @@ runs:
         
         if [[ "$KSU_VERSION" -gt 32427 ]] && [[ "${{ env.KERNEL_VER }}" == "6.12" ]]; then
           sed -i 's|ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include|ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include -I$(KSU_KERNEL_DIR)/include/uapi|' Kbuild
-          # $(src) means different things across kbuild versions, and 6.12 gets it wrong
-          # here. Point KSU_KERNEL_DIR at the directory Kbuild itself lives in instead.
           sed -i 's|^KSU_KERNEL_DIR := $(srctree)/$(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' Kbuild
           sed -i 's|^KSU_KERNEL_DIR := $(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' Kbuild
         fi
@@ -1036,7 +1030,6 @@ runs:
         echo "$susfs_version" >> "${ARTIFACTS_FOLDER}/${OP_MODEL}_${OP_OS_VERSION}.txt"
         echo "SusFS Version: $susfs_version"
         
-        # Prefer the fork when it carries a set for this release; WildKernels lags behind.
         SUSFS_FIX_PATCHES_FOLDER="$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches"
         if [ -d "$BOUTON_KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version" ]; then
           SUSFS_FIX_PATCHES_FOLDER="$BOUTON_KERNEL_PATCHES_FOLDER/next/susfs_fix_patches"
@@ -1238,9 +1231,6 @@ runs:
           fi
         fi
         
-        # Some OnePlus branches (sm8750 and mt6993 on A16) carry a vendor-hook include
-        # between "internal.h" and thaw_super_locked(), which breaks the context of
-        # SusFS's fs/super.c hunk. Park it across the patch and put it back after.
         super_fs_hook=0
         if grep -qxF '#include <trace/hooks/fs.h>' ./fs/super.c; then
           echo "Parking the fs/super.c vendor-hook include so SusFS can match"
@@ -1255,8 +1245,6 @@ runs:
           sed -i '0,/^static int thaw_super_locked/s|^static int thaw_super_locked|#include <trace/hooks/fs.h>\n\n&|' ./fs/super.c
         fi
         
-        # SusFS 2.3.0's android12-5.10 patch declares susfs_sus_kstat_spoof_vfs_statfs()
-        # below the function that calls it, which trips -Werror=implicit-function-declaration.
         statfs_use=$(grep -n 'susfs_sus_kstat_spoof_vfs_statfs(' ./fs/statfs.c | head -n1 | cut -d: -f1 || true)
         statfs_decl=$(grep -n '^extern int susfs_sus_kstat_spoof_vfs_statfs' ./fs/statfs.c | head -n1 | cut -d: -f1 || true)
         if [ -n "$statfs_use" ] && [ -n "$statfs_decl" ] && [ "$statfs_decl" -gt "$statfs_use" ]; then
@@ -1269,16 +1257,11 @@ runs:
           sed -i '/^#endif \/\/ #ifdef CONFIG_KSU_SUSFS$/r /tmp/susfs_statfs_proto.h' ./fs/statfs.c
         fi
         
-        # fs/susfs.c calls security_sb_statfs() without including the header that
-        # declares it. 5.10 does not pull it in transitively, so add it ourselves.
         if grep -q 'security_sb_statfs' ./fs/susfs.c && ! grep -q '^#include <linux/security.h>$' ./fs/susfs.c; then
           echo "Adding the missing <linux/security.h> include to fs/susfs.c"
           sed -i '/^#include <linux\/susfs.h>$/a #include <linux\/security.h>' ./fs/susfs.c
         fi
         
-        # SusFS 2.3.0's 6.12 patch calls susfs_open_redirect_spoof_vfs_statfs() from
-        # vfs_statfs() but never defines it. Stub it to return non-zero, which sends
-        # the caller down its normal path, and keeps the rest of OPEN_REDIRECT working.
         if grep -q 'susfs_open_redirect_spoof_vfs_statfs' ./fs/statfs.c && ! grep -q '^int susfs_open_redirect_spoof_vfs_statfs' ./fs/susfs.c; then
           echo "Stubbing the missing susfs_open_redirect_spoof_vfs_statfs()"
           cat >> ./fs/susfs.c <<'STUB'
@@ -1346,8 +1329,6 @@ runs:
         echo "✅ SUSFS patches applied"
         
         echo "Add SUSFS Configuration Settings"
-        # SusFS 2.1.0 dropped MAGIC_MOUNT, the AUTO_ADD_* options, TRY_UMOUNT,
-        # SUS_OVERLAYFS and SUS_SU; only the older releases still define them.
         if version_lte "2.1.0" "${susfs_version:1}"; then
           cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
         CONFIG_KSU_SUSFS=y
