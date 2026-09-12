@@ -941,9 +941,10 @@ runs:
         
         if [[ "$KSU_VERSION" -gt 33095 ]] && [[ "${{ env.KERNEL_VER }}" == "6.12" ]]; then
           sed -i 's|ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include|ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include -I$(KSU_KERNEL_DIR)/include/uapi|' Kbuild
-          # Make the include root absolute; a relative one does not survive every sub-make.
-          sed -i 's|^KSU_KERNEL_DIR := $(srctree)/$(src)$|KSU_KERNEL_DIR := $(abspath $(srctree)/$(src))|' Kbuild
-          sed -i 's|^KSU_KERNEL_DIR := $(src)$|KSU_KERNEL_DIR := $(abspath $(src))|' Kbuild
+          # $(src) means different things across kbuild versions, and 6.12 gets it wrong
+          # here. Point KSU_KERNEL_DIR at the directory Kbuild itself lives in instead.
+          sed -i 's|^KSU_KERNEL_DIR := $(srctree)/$(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' Kbuild
+          sed -i 's|^KSU_KERNEL_DIR := $(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' Kbuild
         fi
         
         if [ "$KSU_VERSION" -lt 12884 ]; then
@@ -995,9 +996,10 @@ runs:
         
         if [[ "$KSU_VERSION" -gt 32427 ]] && [[ "${{ env.KERNEL_VER }}" == "6.12" ]]; then
           sed -i 's|ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include|ccflags-y += -I$(KSU_KERNEL_DIR) -I$(KSU_KERNEL_DIR)/include -I$(KSU_KERNEL_DIR)/include/uapi|' Kbuild
-          # Make the include root absolute; a relative one does not survive every sub-make.
-          sed -i 's|^KSU_KERNEL_DIR := $(srctree)/$(src)$|KSU_KERNEL_DIR := $(abspath $(srctree)/$(src))|' Kbuild
-          sed -i 's|^KSU_KERNEL_DIR := $(src)$|KSU_KERNEL_DIR := $(abspath $(src))|' Kbuild
+          # $(src) means different things across kbuild versions, and 6.12 gets it wrong
+          # here. Point KSU_KERNEL_DIR at the directory Kbuild itself lives in instead.
+          sed -i 's|^KSU_KERNEL_DIR := $(srctree)/$(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' Kbuild
+          sed -i 's|^KSU_KERNEL_DIR := $(src)$|KSU_KERNEL_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))|' Kbuild
         fi
         
         echo "NEED_HOOKS=false" >> $GITHUB_ENV
