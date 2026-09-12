@@ -1250,9 +1250,7 @@ runs:
         if [ -n "$statfs_use" ] && [ -n "$statfs_decl" ] && [ "$statfs_decl" -gt "$statfs_use" ]; then
           echo "Hoisting the susfs_sus_kstat_spoof_vfs_statfs() declaration above its first use"
           cat > /tmp/susfs_statfs_proto.h <<'PROTO'
-        #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
         extern int susfs_sus_kstat_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf, bool *is_fuse);
-        #endif // #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
         PROTO
           sed -i '/^#endif \/\/ #ifdef CONFIG_KSU_SUSFS$/r /tmp/susfs_statfs_proto.h' ./fs/statfs.c
         fi
@@ -1265,12 +1263,10 @@ runs:
         if grep -q 'susfs_open_redirect_spoof_vfs_statfs' ./fs/statfs.c && ! grep -q '^int susfs_open_redirect_spoof_vfs_statfs' ./fs/susfs.c; then
           echo "Stubbing the missing susfs_open_redirect_spoof_vfs_statfs()"
           cat >> ./fs/susfs.c <<'STUB'
-        #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
         int susfs_open_redirect_spoof_vfs_statfs(struct inode *inode, struct kstatfs *buf)
         {
         	return 1;
         }
-        #endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
         STUB
         fi
         
