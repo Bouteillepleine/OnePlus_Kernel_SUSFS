@@ -1230,7 +1230,22 @@ runs:
           fi
         fi
         
+        # Some OnePlus branches (sm8750 and mt6993 on A16) carry a vendor-hook include
+        # between "internal.h" and thaw_super_locked(), which breaks the context of
+        # SusFS's fs/super.c hunk. Park it across the patch and put it back after.
+        super_fs_hook=0
+        if grep -qxF '#include <trace/hooks/fs.h>' ./fs/super.c; then
+          echo "Parking the fs/super.c vendor-hook include so SusFS can match"
+          sed -i '/^#include <trace\/hooks\/fs\.h>$/,+1{/^#include <trace\/hooks\/fs\.h>$/d; /^$/d}' ./fs/super.c
+          super_fs_hook=1
+        fi
+        
         patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+        
+        if [ "$super_fs_hook" = 1 ]; then
+          echo "Restoring the fs/super.c vendor-hook include"
+          sed -i '0,/^static int thaw_super_locked/s|^static int thaw_super_locked|#include <trace/hooks/fs.h>\n\n&|' ./fs/super.c
+        fi
         
         # SUSFS's OPEN_REDIRECT code unconditionally calls VMA_PAD_START(), which
         # only exists on GKI branches that carry Google's page-size-migration
