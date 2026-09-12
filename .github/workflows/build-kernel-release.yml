@@ -465,7 +465,6 @@ jobs:
         with:
           name: susfs-archives
           path: susfs_archives
-          archive: false
           retention-days: 1
 
       - name: 📊 Build plan summary
