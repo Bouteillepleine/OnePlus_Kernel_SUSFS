@@ -734,6 +734,13 @@ runs:
 
         echo "::endgroup::"
 
+    - name: Download prefetched SusFS archives
+      if: ${{ env.OP_SUSFS == 'true' }}
+      uses: actions/download-artifact@v8
+      with:
+        name: susfs-archives
+        path: susfs_prefetch
+
     - name: Fetch SusFS and Other Dependencies
       shell: bash
       run: |
@@ -771,7 +778,7 @@ runs:
         retry_fetch_archive() {
           local url="$1"
           local branch="${2:-main}"
-          local max_attempts=3
+          local max_attempts=5
           local attempt=1
           
           local repo_name=$(basename "$url" .git)
@@ -805,7 +812,17 @@ runs:
           while [ $attempt -le $max_attempts ]; do
               echo " Attempt $attempt/$max_attempts: High-speed fetch for $repo_name ($branch)"
               
-              if aria2c -x16 -s16 -j16 -k1M --retry-wait=2 --max-tries=5 -d "/dev/shm" -o "$archive_name" --allow-overwrite=true "${aria2_headers[@]}" $aria_log_flags "$download_url"; then
+              got=0
+              if aria2c -x8 -s8 -j8 -k1M --retry-wait=5 --max-tries=3 -d "/dev/shm" -o "$archive_name" --allow-overwrite=true "${aria2_headers[@]}" $aria_log_flags "$download_url"; then
+                  got=1
+              else
+                  echo "  aria2c could not get it; retrying the same URL on a single connection"
+                  if curl --fail --location --show-error --retry 3 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 300 -o "$shm_path" "$download_url"; then
+                      got=1
+                  fi
+              fi
+              
+              if [ "$got" = 1 ]; then
                   mkdir -p "$repo_name"
                   if tar -I "pigz -p $nproc -b 256" -x --record-size=1M -f "$shm_path" -C "$repo_name" --strip-components=1 --no-same-owner; then
                       echo "✅ Success: $repo_name synced"
@@ -816,7 +833,7 @@ runs:
               
               echo "⚠️ Attempt $attempt failed, clearing RAM and retrying..."
               rm -rf "$repo_name" "$shm_path" 2>/dev/null
-              sleep 5
+              sleep $(( attempt * 5 + RANDOM % 10 ))
               attempt=$((attempt + 1))
           done
           
@@ -861,7 +878,12 @@ runs:
         
         if [ "${{ env.OP_SUSFS }}" = true ]; then
           echo "Using SUSFS branch/commit: $SUSFS_BRANCH"
-          if ! retry_fetch_archive "https://gitlab.com/simonpunk/susfs4ksu.git" "$SUSFS_BRANCH"; then
+          PREFETCHED="$GITHUB_WORKSPACE/susfs_prefetch/susfs4ksu_${SUSFS_BRANCH}.tar.gz"
+          if [ -s "$PREFETCHED" ]; then
+            echo "📦 Using the archive prefetched by set-op-model"
+            mkdir -p susfs4ksu
+            tar -xzf "$PREFETCHED" -C susfs4ksu --strip-components=1 --no-same-owner
+          elif ! retry_fetch_archive "https://gitlab.com/simonpunk/susfs4ksu.git" "$SUSFS_BRANCH"; then
             echo "::error::Failed to fetch SUSFS archive after multiple attempts"
             exit 1
           fi

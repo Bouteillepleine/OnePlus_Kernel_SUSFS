@@ -355,6 +355,21 @@ jobs:
             
             susfs_hashes["$key"]="$resolved"
             echo "  ✅ Resolved: $key → $resolved"
+            
+            # Pull the archive once per run. Every build job hitting the GitLab archive
+            # endpoint at once gets throttled; one request per GKI key does not.
+            mkdir -p susfs_archives
+            echo "$key $resolved" >> susfs_archives/manifest.txt
+            archive="susfs_archives/susfs4ksu_${resolved}.tar.gz"
+            if [ ! -s "$archive" ]; then
+              archive_url="https://gitlab.com/simonpunk/susfs4ksu/-/archive/${resolved}/susfs4ksu-${resolved}.tar.gz"
+              if curl --fail --location --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 300 -o "$archive" "$archive_url"; then
+                echo "  📦 Prefetched susfs4ksu_${resolved}.tar.gz ($(stat -c%s "$archive") bytes)"
+              else
+                echo "::warning::Could not prefetch the SUSFS archive for $key; build jobs will fetch it themselves"
+                rm -f "$archive"
+              fi
+            fi
           done
           
           # Write CSV list of active GKI versions
@@ -443,6 +458,15 @@ jobs:
           path: matrix.json
           archive: false
           retention-days: 7
+
+      - name: Upload prefetched SusFS archives
+        if: ${{ hashFiles('susfs_archives/**') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: susfs-archives
+          path: susfs_archives
+          archive: false
+          retention-days: 1
 
       - name: 📊 Build plan summary
         run: |
