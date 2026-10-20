@@ -1243,7 +1243,23 @@ runs:
           super_fs_hook=1
         fi
         
-        patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+        patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch" || true
+
+        # The upstream patch is generated against a newer GKI than OnePlus ships, so a few
+        # hunks anchor on helpers this tree has not renamed yet. The fix-up carries those
+        # same additions in this tree's spelling; anything still rejected after it is real.
+        SUSFS_KERNEL_FIX="$SUSFS_FIX_PATCHES_FOLDER/$susfs_version/kernel_fix_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+        if [ -f "$SUSFS_KERNEL_FIX" ] && find . -name '*.rej' | grep -q .; then
+          echo "Rejected by the upstream patch: $(find . -name '*.rej' | tr '\n' ' ')"
+          find . -name '*.rej' -delete
+          find . -name '*.orig' -delete
+          echo "Applying $(basename "$SUSFS_KERNEL_FIX")"
+          patch -p1 --forward < "$SUSFS_KERNEL_FIX"
+        fi
+        if find . -name '*.rej' | grep -q .; then
+          echo "::error::susfs kernel patch left rejects: $(find . -name '*.rej' | tr '\n' ' ')"
+          exit 1
+        fi
         
         if [ "$super_fs_hook" = 1 ]; then
           echo "Restoring the fs/super.c vendor-hook include"
