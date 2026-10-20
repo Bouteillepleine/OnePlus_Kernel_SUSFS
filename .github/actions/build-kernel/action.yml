@@ -803,7 +803,12 @@ runs:
           if [[ "$url" == *"github.com"* ]]; then
               download_url="${url%.git}/archive/refs/heads/${branch}.tar.gz"
           elif [[ "$url" == *"gitlab.com"* ]]; then
-              download_url="${url%.git}/-/archive/${branch}/${repo_name}-${branch}.tar.gz"
+              # /-/archive/ answers 403 to a datacenter IP carrying a browser User-Agent;
+              # the REST archive endpoint serves the same tarball without that gate.
+              local gl_project="${url#https://gitlab.com/}"
+              gl_project="${gl_project%.git}"
+              download_url="https://gitlab.com/api/v4/projects/${gl_project//\//%2F}/repository/archive.tar.gz?sha=${branch}"
+              aria2_headers=("--header=Accept: */*")
           else
               echo "::error::Unsupported host: $url"
               return 1
