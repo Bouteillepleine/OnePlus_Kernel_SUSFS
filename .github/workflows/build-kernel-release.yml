@@ -78,6 +78,14 @@ on:
         description: 'Enter SusFS Branch or commit hash for android16-6.12'
         type: string
         default: ''
+      kernel_patches_repo:
+        description: 'Repository holding the SusFS/KSU fix patches'
+        type: string
+        default: Bouteillepleine/kernel_patches
+      patches_ref:
+        description: 'Branch or commit of the fix patches repository'
+        type: string
+        default: main
 
 jobs:
   set-op-model:
@@ -698,6 +706,8 @@ jobs:
           ksu_type: ${{ matrix.ksu_type }}
           ksu_branch_or_hash: ${{ matrix.ksu_resolved_hash }}
           susfs_commit_hash_or_branch: ${{ matrix.susfs_resolved_hash }}
+          kernel_patches_repo: ${{ inputs.kernel_patches_repo }}
+          patches_ref: ${{ inputs.patches_ref }}
           optimize_level: ${{ inputs.optimize_level }}
           build_timestamp: ${{ inputs.build_timestamp }}
           clean: ${{ inputs.clean_build }}

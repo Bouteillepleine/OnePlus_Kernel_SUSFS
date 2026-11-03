@@ -22,6 +22,16 @@ inputs:
     required: false
     type: string
     default: ""
+  kernel_patches_repo:
+    description: 'Repository holding the SUSFS/KSU fix patches'
+    required: false
+    type: string
+    default: Bouteillepleine/kernel_patches
+  patches_ref:
+    description: 'Branch or commit of kernel_patches_repo to use'
+    required: false
+    type: string
+    default: main
   build_timestamp:
     description: 'Custom kernel build timestamp shown in uname -a (e.g. "Tue Feb 10 10:01:02 UTC 2026"). Leave empty to use the current build time.'
     required: false
@@ -867,7 +877,14 @@ runs:
           return 1
         }
         
-        retry_clone "https://github.com/WildKernels/kernel_patches.git" "main" "1"
+        # A composite action's default loses to an empty value passed by the
+        # caller, so re-apply it here rather than cloning https://github.com/.git
+        PATCHES_REPO="${{ inputs.kernel_patches_repo }}"
+        PATCHES_REF="${{ inputs.patches_ref }}"
+        PATCHES_REPO="${PATCHES_REPO:-Bouteillepleine/kernel_patches}"
+        PATCHES_REF="${PATCHES_REF:-main}"
+        echo "Using fix patches from $PATCHES_REPO@$PATCHES_REF"
+        retry_clone "https://github.com/${PATCHES_REPO}.git" "$PATCHES_REF" "1"
         
         if [ "${{ env.OP_SUSFS }}" = true ]; then
           echo "Using SUSFS branch/commit: $SUSFS_BRANCH"
@@ -900,9 +917,9 @@ runs:
         echo "Adding KernelSU Next..."
         KSU_INPUT="${{ inputs.ksu_branch_or_hash }}"
         if [ -z "$KSU_INPUT" ]; then
-          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -
+          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -
         else
-          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s "$KSU_INPUT"
+          curl --fail --location --proto '=https' -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/dev/kernel/setup.sh" | bash -s "$KSU_INPUT"
         fi
         git submodule update --init --recursive
         cd KernelSU-Next/kernel
@@ -1116,6 +1133,15 @@ runs:
               patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/overwrite_hook_mode.patch"
               echo "Patching KSU_TOOLKIT Support for SusFS kernel!"
               patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/ksu_toolkit.patch"
+              PREINIT_PATCH="$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/preinit_close_fd.patch"
+              if [ -f "$PREINIT_PATCH" ] && [ -f kernel/preinit/preinit.c ]; then
+                if grep -qE '(^|[^_[:alnum:]])close_fd\(fd\)' kernel/preinit/preinit.c; then
+                  echo "Repairing preinit.c to call ksu_close_fd!"
+                  patch -p1 --forward < "$PREINIT_PATCH"
+                else
+                  echo "preinit.c already uses ksu_close_fd; nothing to repair"
+                fi
+              fi
             else
               cd "$KSU_FOLDER"
               patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
@@ -1214,7 +1240,28 @@ runs:
           fi
         fi
         
-        patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+        # SUSFS occasionally regenerates 50_add_susfs_in_<branch>.patch against a
+        # tree that is not the branch it names, and then it rejects on every kernel
+        # on that KMI. Re-aim it from kernel_patches first, but only once upstream's
+        # own copy is proven not to apply, so this gate retires itself silently the
+        # day SUSFS fixes the patch. Dry-run at patch's default fuzz: some hunks
+        # legitimately need fuzz 1-2 on OnePlus trees, so --fuzz=0 would reject
+        # upstream's copy and ours alike.
+        SUSFS_KERNEL_PATCH="$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+        REAIM_PATCH="$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/reaim_50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+        if patch -p1 --forward --dry-run < "$SUSFS_KERNEL_PATCH" >/dev/null 2>&1; then
+          echo "Upstream 50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch applies as-is"
+        elif [ -f "$REAIM_PATCH" ]; then
+          echo "⚠️ Upstream 50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch does not apply; re-aiming it"
+          if ! patch -p1 --forward -d "$SUSFS_FOLDER" < "$REAIM_PATCH"; then
+            echo "::error::reaim_50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch no longer fits SUSFS ${SUSFS_COMMIT_SHA:-unknown} — refresh it in ${{ inputs.kernel_patches_repo }}"
+            exit 1
+          fi
+        else
+          echo "::warning::50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch does not apply and SUSFS $susfs_version has no reaim patch"
+        fi
+        
+        patch -p1 --forward < "$SUSFS_KERNEL_PATCH"
         
         # SUSFS's OPEN_REDIRECT code unconditionally calls VMA_PAD_START(), which
         # only exists on GKI branches that carry Google's page-size-migration
@@ -1292,25 +1339,46 @@ runs:
         echo "✅ SUSFS patches applied"
         
         echo "Add SUSFS Configuration Settings"
-        cat >> "$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig" <<EOF
-        CONFIG_KSU_SUSFS=y
-        CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
-        CONFIG_KSU_SUSFS_SUS_PATH=y
-        CONFIG_KSU_SUSFS_SUS_MOUNT=y
-        CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
-        CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
-        CONFIG_KSU_SUSFS_SUS_KSTAT=y
-        CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
-        CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-        CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
-        CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-        CONFIG_KSU_SUSFS_ENABLE_LOG=y
-        CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
-        CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-        CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
-        CONFIG_KSU_SUSFS_SUS_MAP=y
-        CONFIG_KSU_SUSFS_SUS_SU=n
-        EOF
+        
+        # Each SUSFS release retires some CONFIG_KSU_SUSFS_* symbols and adds
+        # others; olddefconfig drops the ones its Kconfig never declares without
+        # a word, so write only what this release defines and log the rest. The
+        # full list stays, because older SUSFS versions this gate still accepts
+        # do declare the retired symbols.
+        write_susfs_cfg() {
+          local cfg="$COMMON_KERNEL_FOLDER/arch/arm64/configs/gki_defconfig"
+          local entry sym
+          for entry in "$@"; do
+            sym="${entry%%=*}"
+            sym="${sym#CONFIG_}"
+            if grep -qE "^[[:space:]]*config ${sym}\$" "${KSUN_FOLDER:-/nonexistent}/kernel/Kconfig" 2>/dev/null \
+              || grep -qE "^[[:space:]]*config ${sym}\$" "${KSU_FOLDER:-/nonexistent}/kernel/Kconfig" 2>/dev/null; then
+              echo "$entry" >> "$cfg"
+            else
+              echo "  skip $entry (not defined by SUSFS $susfs_version)"
+            fi
+          done
+        }
+        
+        write_susfs_cfg \
+          CONFIG_KSU_SUSFS=y \
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y \
+          CONFIG_KSU_SUSFS_SUS_PATH=y \
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y \
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y \
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y \
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y \
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n \
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y \
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y \
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y \
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y \
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y \
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y \
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y \
+          CONFIG_KSU_SUSFS_SUS_MAP=y \
+          CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y \
+          CONFIG_KSU_SUSFS_SUS_SU=n
         
         echo "::endgroup::"
 
