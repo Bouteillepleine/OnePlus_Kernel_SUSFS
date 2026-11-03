@@ -23,12 +23,22 @@ inputs:
     type: string
     default: ""
   kernel_patches_repo:
-    description: 'Repository holding the SUSFS/KSU fix patches'
+    description: 'Repository holding the device and common kernel patches'
+    required: false
+    type: string
+    default: WildKernels/kernel_patches
+  patches_ref:
+    description: 'Branch or commit of kernel_patches_repo to use'
+    required: false
+    type: string
+    default: main
+  susfs_fix_patches_repo:
+    description: 'Repository whose next/susfs_fix_patches overrides kernel_patches_repo (empty = no override)'
     required: false
     type: string
     default: Bouteillepleine/kernel_patches
-  patches_ref:
-    description: 'Branch or commit of kernel_patches_repo to use'
+  susfs_fix_patches_ref:
+    description: 'Branch or commit of susfs_fix_patches_repo to use'
     required: false
     type: string
     default: main
@@ -849,7 +859,7 @@ runs:
           local url="$1"
           local branch="${2:-main}"
           local depth="${3:-1}"
-          local dir="$(basename "$url" .git)"
+          local dir="${4:-$(basename "$url" .git)}"
           local max_attempts=3
           local attempt=1
           
@@ -881,10 +891,27 @@ runs:
         # caller, so re-apply it here rather than cloning https://github.com/.git
         PATCHES_REPO="${{ inputs.kernel_patches_repo }}"
         PATCHES_REF="${{ inputs.patches_ref }}"
-        PATCHES_REPO="${PATCHES_REPO:-Bouteillepleine/kernel_patches}"
+        PATCHES_REPO="${PATCHES_REPO:-WildKernels/kernel_patches}"
         PATCHES_REF="${PATCHES_REF:-main}"
-        echo "Using fix patches from $PATCHES_REPO@$PATCHES_REF"
+        echo "Using kernel patches from $PATCHES_REPO@$PATCHES_REF"
         retry_clone "https://github.com/${PATCHES_REPO}.git" "$PATCHES_REF" "1"
+        
+        # Only next/susfs_fix_patches may come from elsewhere. Everything else
+        # this repo reads - hmbird, module_overlay, the common/* optimisations,
+        # bbrv3, backports - has to stay on $PATCHES_REPO, because a fork of
+        # kernel_patches carries its own deliberately different copies of those
+        # and is free to lack a device's patch entirely.
+        FIX_REPO="${{ inputs.susfs_fix_patches_repo }}"
+        FIX_REF="${{ inputs.susfs_fix_patches_ref }}"
+        FIX_REF="${FIX_REF:-main}"
+        if [ -n "$FIX_REPO" ] && [ "$FIX_REPO/$FIX_REF" != "$PATCHES_REPO/$PATCHES_REF" ]; then
+          echo "Overriding SUSFS fix patches from $FIX_REPO@$FIX_REF"
+          if retry_clone "https://github.com/${FIX_REPO}.git" "$FIX_REF" "1" "susfs_fix_patches"; then
+            echo "SUSFS_FIX_OVERRIDE_FOLDER=$GITHUB_WORKSPACE/susfs_fix_patches" >> $GITHUB_ENV
+          else
+            echo "::warning::could not fetch $FIX_REPO@$FIX_REF; falling back to $PATCHES_REPO fix patches"
+          fi
+        fi
         
         if [ "${{ env.OP_SUSFS }}" = true ]; then
           echo "Using SUSFS branch/commit: $SUSFS_BRANCH"
@@ -1025,6 +1052,17 @@ runs:
         echo "::group::Apply SUSFS patches"
         cd "$KERNEL_PLATFORM_FOLDER"
         echo "Applying SUSFS patches..."
+        
+        # Resolve one fix patch: the override repo wins when it carries that file,
+        # so a fork need only hold what it has actually refreshed.
+        fix_patch() {
+          local rel="next/susfs_fix_patches/$susfs_version/$1"
+          if [ -n "${SUSFS_FIX_OVERRIDE_FOLDER:-}" ] && [ -f "$SUSFS_FIX_OVERRIDE_FOLDER/$rel" ]; then
+            echo "$SUSFS_FIX_OVERRIDE_FOLDER/$rel"
+          else
+            echo "$KERNEL_PATCHES_FOLDER/$rel"
+          fi
+        }
         cp "$SUSFS_FOLDER/kernel_patches/fs/"* "$COMMON_KERNEL_FOLDER/fs/"
         cp "$SUSFS_FOLDER/kernel_patches/include/linux/"* "$COMMON_KERNEL_FOLDER/include/linux/"
         
@@ -1048,10 +1086,10 @@ runs:
           "v1.5.8")
             if [ "${{ inputs.ksu_type }}" = "KSUN" ]; then
               patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_apk_sign.c.patch"
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_core_hook.c.patch"
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_selinux.c.patch"
-              patch -p1 --forward --fuzz=3 < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_ksud.c.patch"
+              patch -p1 --forward --fuzz=3 < "$(fix_patch fix_apk_sign.c.patch)"
+              patch -p1 --forward --fuzz=3 < "$(fix_patch fix_core_hook.c.patch)"
+              patch -p1 --forward --fuzz=3 < "$(fix_patch fix_selinux.c.patch)"
+              patch -p1 --forward --fuzz=3 < "$(fix_patch fix_ksud.c.patch)"
             else
               cd "$KSU_FOLDER"
               patch -p1 --forward --fuzz=3 < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
@@ -1063,9 +1101,9 @@ runs:
               patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
               for file in $(find ./kernel -maxdepth 2 -name "*.rej" -printf "%f\n" | cut -d'.' -f1); do
                 echo "Patching file: $file.c with fix_$file.c.patch"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.c.patch"
+                patch -p1 --forward < "$(fix_patch fix_$file.c.patch)"
               done
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_kernel_compat.c.patch"
+              patch -p1 --forward < "$(fix_patch fix_kernel_compat.c.patch)"
             else
               cd "$KSU_FOLDER"
               patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch"
@@ -1077,19 +1115,19 @@ runs:
               patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
               for file in $(find ./kernel -maxdepth 2 -name "*.rej" -exec basename {} .rej \;); do
                 echo "Patching file: $file with fix_$file.patch"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.patch"
+                patch -p1 --forward < "$(fix_patch fix_$file.patch)"
               done
               echo "Patching Hook Mode!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/overwrite_hook_mode.patch"
+              patch -p1 --forward < "$(fix_patch overwrite_hook_mode.patch)"
               echo "Patching KSU_TOOLKIT Support for SusFS kernel!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/ksu_toolkit.patch"
+              patch -p1 --forward < "$(fix_patch ksu_toolkit.patch)"
               if [ "$KSUVER" -le 33095 ]; then
                 echo "Patching Multi-manager Support for SusFS kernel!"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_manager.patch"
+                patch -p1 --forward < "$(fix_patch multi_manager.patch)"
               fi
               if [ "$KSUVER" -ge 33068 ] && [ "$KSUVER" -lt 33070 ]; then
                 echo "Patching Multi-manager sepolicy Support for SusFS kernel!"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_sepolicy_fix.patch"
+                patch -p1 --forward < "$(fix_patch multi_sepolicy_fix.patch)"
               fi
             else
               cd "$KSU_FOLDER"
@@ -1102,19 +1140,19 @@ runs:
               patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
               for file in $(find ./kernel -maxdepth 2 -name "*.rej" -exec basename {} .rej \;); do
                 echo "Patching file: $file with fix_$file.patch"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.patch"
+                patch -p1 --forward < "$(fix_patch fix_$file.patch)"
               done
               echo "Patching Hook Mode!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/overwrite_hook_mode.patch"
+              patch -p1 --forward < "$(fix_patch overwrite_hook_mode.patch)"
               echo "Patching KSU_TOOLKIT Support for SusFS kernel!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/ksu_toolkit.patch"
+              patch -p1 --forward < "$(fix_patch ksu_toolkit.patch)"
               if [ "$KSUVER" -le 33095 ]; then
                 echo "Patching Multi-manager Support for SusFS kernel!"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_manager.patch"
+                patch -p1 --forward < "$(fix_patch multi_manager.patch)"
               fi
               if [ "$KSUVER" -ge 33068 ] && [ "$KSUVER" -lt 33070 ]; then
                 echo "Patching Multi-manager sepolicy Support for SusFS kernel!"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/multi_sepolicy_fix.patch"
+                patch -p1 --forward < "$(fix_patch multi_sepolicy_fix.patch)"
               fi
             else
               cd "$KSU_FOLDER"
@@ -1127,13 +1165,13 @@ runs:
               patch -p1 --forward < "$SUSFS_FOLDER/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch" || true
               for file in $(find ./kernel -maxdepth 2 -name "*.rej" -exec basename {} .rej \;); do
                 echo "Patching file: $file with fix_$file.patch"
-                patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/fix_$file.patch"
+                patch -p1 --forward < "$(fix_patch fix_$file.patch)"
               done
               echo "Patching Hook Mode!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/overwrite_hook_mode.patch"
+              patch -p1 --forward < "$(fix_patch overwrite_hook_mode.patch)"
               echo "Patching KSU_TOOLKIT Support for SusFS kernel!"
-              patch -p1 --forward < "$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/ksu_toolkit.patch"
-              PREINIT_PATCH="$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/preinit_close_fd.patch"
+              patch -p1 --forward < "$(fix_patch ksu_toolkit.patch)"
+              PREINIT_PATCH="$(fix_patch preinit_close_fd.patch)"
               if [ -f "$PREINIT_PATCH" ] && [ -f kernel/preinit/preinit.c ]; then
                 if grep -qE '(^|[^_[:alnum:]])close_fd\(fd\)' kernel/preinit/preinit.c; then
                   echo "Repairing preinit.c to call ksu_close_fd!"
@@ -1248,7 +1286,7 @@ runs:
         # legitimately need fuzz 1-2 on OnePlus trees, so --fuzz=0 would reject
         # upstream's copy and ours alike.
         SUSFS_KERNEL_PATCH="$SUSFS_FOLDER/kernel_patches/50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
-        REAIM_PATCH="$KERNEL_PATCHES_FOLDER/next/susfs_fix_patches/$susfs_version/reaim_50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch"
+        REAIM_PATCH="$(fix_patch reaim_50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch)"
         if patch -p1 --forward --dry-run < "$SUSFS_KERNEL_PATCH" >/dev/null 2>&1; then
           echo "Upstream 50_add_susfs_in_${{ env.SUSFS_KERNEL_BRANCH }}.patch applies as-is"
         elif [ -f "$REAIM_PATCH" ]; then

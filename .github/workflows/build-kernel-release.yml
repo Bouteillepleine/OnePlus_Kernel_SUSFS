@@ -79,11 +79,19 @@ on:
         type: string
         default: ''
       kernel_patches_repo:
-        description: 'Repository holding the SusFS/KSU fix patches'
+        description: 'Repository holding the device and common kernel patches'
+        type: string
+        default: WildKernels/kernel_patches
+      patches_ref:
+        description: 'Branch or commit of the kernel patches repository'
+        type: string
+        default: main
+      susfs_fix_patches_repo:
+        description: 'Repository whose next/susfs_fix_patches overrides the above (empty = no override)'
         type: string
         default: Bouteillepleine/kernel_patches
-      patches_ref:
-        description: 'Branch or commit of the fix patches repository'
+      susfs_fix_patches_ref:
+        description: 'Branch or commit of the SusFS fix patches repository'
         type: string
         default: main
 
@@ -708,6 +716,8 @@ jobs:
           susfs_commit_hash_or_branch: ${{ matrix.susfs_resolved_hash }}
           kernel_patches_repo: ${{ inputs.kernel_patches_repo }}
           patches_ref: ${{ inputs.patches_ref }}
+          susfs_fix_patches_repo: ${{ inputs.susfs_fix_patches_repo }}
+          susfs_fix_patches_ref: ${{ inputs.susfs_fix_patches_ref }}
           optimize_level: ${{ inputs.optimize_level }}
           build_timestamp: ${{ inputs.build_timestamp }}
           clean: ${{ inputs.clean_build }}
